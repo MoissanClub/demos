@@ -165,23 +165,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--slave-id", type=lambda x: int(x, 0), default=None, help="Override slave ID, e.g. 126 or 0x7e.")
     parser.add_argument("--baud", type=int, default=460800, help="Modbus baudrate. Default: 460800.")
 
-    parser.add_argument("--start-threshold", type=float, default=20.0,
-                        help="Touch value that starts closing from open. Default: 20.")
-    parser.add_argument("--stop-threshold", type=float, default=80.0,
-                        help="Touch value that stops closing. Default: 80.")
-    parser.add_argument("--release-threshold", type=float, default=10.0,
-                        help="Below this value counts as released. Default: 10.")
+    parser.add_argument("--start-threshold", type=float, default=50.0,
+                        help="Touch value that starts closing from open. Default: 50.")
+    parser.add_argument("--stop-threshold", type=float, default=250.0,
+                        help="Touch value that stops closing. Default: 250.")
+    parser.add_argument("--release-threshold", type=float, default=20.0,
+                        help="Below this value counts as released. Default: 20.")
     parser.add_argument("--release-seconds", type=float, default=0.7,
                         help="Seconds below release threshold before reopening. Default: 0.7.")
-    parser.add_argument("--hold-duration", type=float, default=1.0,
-                        help="Seconds to remain in hold before reopening. Default: 1.0.")
+    parser.add_argument("--hold-duration", type=float, default=5.0,
+                        help="Seconds to remain in hold before reopening. Default: 5.0.")
 
-    parser.add_argument("--max-close", type=int, default=750,
-                        help="Maximum close command, 0=open, 1000=fully closed. Default 750 = 3/4 closed.")
-    parser.add_argument("--step", type=int, default=25,
-                        help="Close command increment per step. Default: 25.")
-    parser.add_argument("--period", type=float, default=0.15,
-                        help="Control loop period in seconds. Default: 0.15.")
+    parser.add_argument("--max-close", type=int, default=500,
+                        help="Maximum close command, 0=open, 1000=fully closed. Default: 500.")
+    parser.add_argument("--step", type=int, default=50,
+                        help="Close command increment per step. Default: 50.")
+    parser.add_argument("--period", type=float, default=0.10,
+                        help="Control loop period in seconds. Default: 0.10.")
     parser.add_argument("--open-repeat", type=float, default=1.0,
                         help="Repeat open command every N seconds while idle. Default: 1.0.")
 
@@ -198,7 +198,7 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
 
     if not args.left and not args.right and args.port is None and args.slave_id is None:
-        args.left = True
+        args.right = True
 
     if args.port is None:
         args.port = DEFAULT_RIGHT_PORT if args.right else DEFAULT_LEFT_PORT
