@@ -1,0 +1,594 @@
+# BrainCo Tactile Handshake Demo for Unitree G1
+
+This README documents `g1_brainco_handshake_demo.py`, a standalone BrainCo SDK demo for the Unitree G1 PC2. The script reads the tactile sensor on one BrainCo hand and commands that same hand to perform a simple handshake behavior.
+
+## Behavior
+
+The demo runs a small state machine:
+
+```text
+open_wait:
+  Keep the hand fully open while no touch is detected.
+
+closing:
+  When touch/contact is detected, close the hand slowly.
+
+hold:
+  Stop closing when either:
+    1. tactile value reaches the stop threshold, or
+    2. commanded close reaches max-close.
+
+release:
+  When touch is released for release-seconds, reopen the hand.
+```
+
+Default closing limit:
+
+```text
+0    = fully open
+1000 = fully closed
+750  = 3/4 closed
+```
+
+The default `--max-close 750` therefore means the hand will not close beyond 75% of the command range.
+
+## Files
+
+Recommended location on PC2:
+
+```text
+~/demos/g1_brainco_handshake_demo.py
+~/bin/g1_fix_serial_permissions.sh
+```
+
+The permission helper script is optional but recommended because the BrainCo FTDI serial ports may not be writable by your user after reboot.
+
+## Hardware and port mapping
+
+On this G1 setup, the BrainCo module is connected through one USB-C cable, but Linux sees one FTDI FT4232H device exposing four serial interfaces:
+
+```text
+FTDI if00 -> /dev/ttyUSB0
+FTDI if01 -> /dev/ttyUSB1
+FTDI if02 -> /dev/ttyUSB2
+FTDI if03 -> /dev/ttyUSB3
+```
+
+The working hand mapping discovered by Modbus scan is:
+
+```text
+left hand:
+  slave ID: 126 / 0x7e
+  FTDI interface: if02
+  stable port:
+    /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if02-port0
+
+right hand:
+  slave ID: 127 / 0x7f
+  FTDI interface: if01
+  stable port:
+    /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if01-port0
+```
+
+Use `/dev/serial/by-id/...` instead of `/dev/ttyUSB*` where possible, because `/dev/ttyUSB*` numbering can change after reboot.
+
+## Safety notes
+
+Before moving the hand:
+
+1. Keep the G1 arm still.
+2. Make sure fingers are clear of hard objects and cables.
+3. Start with `--dry-run`.
+4. Start with a conservative `--max-close`, such as `500`.
+5. Start with slow closing, such as `--step 10 --period 0.25`.
+6. Be ready to press `Ctrl-C`.
+
+The script tries to reopen the hand on `Ctrl-C`, but do not rely on software alone as the only safety mechanism.
+
+## Important: do not run this with `launch_robot.sh`
+
+Do not run this script while the BrainCo ROS launch is running:
+
+```bash
+./launch/launch_robot.sh
+# or
+~/bin/g1_brainco_launcher.sh robot
+```
+
+Reason: `launch_robot.sh` starts `stark_node`, which opens the same BrainCo Modbus serial ports. Only one process should own a given hand serial port at a time.
+
+For this standalone demo, stop the ROS hand node first.
+
+## Install on PC2
+
+Copy the script to the G1 PC2:
+
+```bash
+mkdir -p ~/demos
+cp g1_brainco_handshake_demo.py ~/demos/
+chmod +x ~/demos/g1_brainco_handshake_demo.py
+```
+
+Make sure the BrainCo SDK is available:
+
+```bash
+conda activate g1brainco
+
+cd ~
+git clone https://github.com/BrainCoTech/brainco-hand-sdk.git
+
+cd ~/brainco-hand-sdk/python
+pip install -r requirements.txt
+pip install bc-stark-sdk
+```
+
+If you already cloned the SDK earlier, you do not need to clone it again.
+
+## Fix serial permissions
+
+Run the permission helper before testing:
+
+```bash
+~/bin/g1_fix_serial_permissions.sh
+```
+
+For a persistent setup:
+
+```bash
+~/bin/g1_fix_serial_permissions.sh --permanent
+sudo reboot
+```
+
+After reboot, confirm that your user is in the `dialout` group:
+
+```bash
+groups
+```
+
+You should see:
+
+```text
+dialout
+```
+
+## First test: dry run, no hand motion
+
+Use dry-run first. This reads tactile values and prints state transitions, but does not move the hand.
+
+Left hand:
+
+```bash
+conda activate g1brainco
+
+python ~/demos/g1_brainco_handshake_demo.py \
+  --left \
+  --dry-run \
+  --duration 30
+```
+
+Right hand:
+
+```bash
+conda activate g1brainco
+
+python ~/demos/g1_brainco_handshake_demo.py \
+  --right \
+  --dry-run \
+  --duration 30
+```
+
+While it is running, touch the fingertips and palm contact areas. Watch the `touch=` value.
+
+Example output:
+
+```text
+open_wait  touch=   0.00 close_cmd=   0 | thumb=0 index=0 middle=0 ring=0 pinky=0
+closing    touch=  35.00 close_cmd=  20 | thumb=5 index=35 middle=0 ring=0 pinky=0
+hold       touch= 110.00 close_cmd= 220 | thumb=20 index=110 middle=70 ring=0 pinky=0
+```
+
+## First motion test: conservative
+
+After dry-run looks reasonable, start with a lower close limit:
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py \
+  --left \
+  --start-threshold 20 \
+  --stop-threshold 80 \
+  --release-threshold 10 \
+  --max-close 500 \
+  --step 10 \
+  --period 0.25
+```
+
+This means:
+
+```text
+start closing when touch >= 20
+stop closing when touch >= 80
+reopen when touch stays below 10 for 0.7 seconds
+never close past 500 / 1000
+increase close command by 10 every 0.25 seconds
+```
+
+## 3/4-close handshake test
+
+Once the conservative test behaves safely:
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py \
+  --left \
+  --start-threshold 20 \
+  --stop-threshold 80 \
+  --release-threshold 10 \
+  --max-close 750 \
+  --step 20 \
+  --period 0.20
+```
+
+For the right hand:
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py \
+  --right \
+  --start-threshold 20 \
+  --stop-threshold 80 \
+  --release-threshold 10 \
+  --max-close 750 \
+  --step 20 \
+  --period 0.20
+```
+
+## Tuning thresholds
+
+The tactile numbers are hardware/firmware dependent. Tune them on your hand.
+
+Recommended tuning workflow:
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py \
+  --left \
+  --dry-run \
+  --duration 60
+```
+
+Measure three ranges:
+
+```text
+no touch:
+  observed background/noise value
+
+light touch:
+  value when a person first touches the hand
+
+firm handshake:
+  value at a comfortable stopping pressure
+```
+
+Then choose:
+
+```text
+release-threshold:
+  slightly above no-touch noise
+
+start-threshold:
+  above release-threshold, near light touch
+
+stop-threshold:
+  near comfortable firm contact
+```
+
+Example:
+
+```text
+no touch:       0-5
+light touch:    25-40
+firm handshake: 90-130
+```
+
+Use:
+
+```bash
+--release-threshold 10
+--start-threshold 25
+--stop-threshold 100
+```
+
+## Command reference
+
+```text
+--left
+  Use the left hand.
+  Default left port:
+    /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if02-port0
+  Default left slave:
+    126 / 0x7e
+
+--right
+  Use the right hand.
+  Default right port:
+    /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if01-port0
+  Default right slave:
+    127 / 0x7f
+
+--port PATH
+  Override the serial port.
+
+--slave-id ID
+  Override the Modbus slave ID.
+  Accepts decimal or hex, for example:
+    126
+    0x7e
+
+--baud BAUD
+  Modbus baudrate.
+  Default:
+    460800
+
+--start-threshold VALUE
+  Touch value that starts closing from open.
+  Default:
+    20
+
+--stop-threshold VALUE
+  Touch value that stops closing.
+  Default:
+    80
+
+--release-threshold VALUE
+  If touch remains below this value for release-seconds, the hand opens.
+  Default:
+    10
+
+--release-seconds SECONDS
+  Release debounce time.
+  Default:
+    0.7
+
+--max-close VALUE
+  Maximum close command.
+  Range:
+    0 to 1000
+  Default:
+    750
+
+--step VALUE
+  Close-command increment per control loop.
+  Smaller = slower and safer.
+  Default:
+    25
+
+--period SECONDS
+  Control-loop period.
+  Larger = slower.
+  Default:
+    0.15
+
+--thumb-scale SCALE
+  Scale thumb and thumb_aux closing relative to other fingers.
+  Example:
+    --thumb-scale 0.7
+  Default:
+    1.0
+
+--dry-run
+  Read sensors and print decisions, but do not command movement.
+
+--duration SECONDS
+  Run for a fixed duration.
+  0 means run until Ctrl-C.
+  Default:
+    0
+
+--quiet
+  Print less frequently.
+```
+
+## Useful examples
+
+### Left hand dry-run
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py --left --dry-run --duration 30
+```
+
+### Right hand dry-run
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py --right --dry-run --duration 30
+```
+
+### Very slow, safer motion
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py \
+  --left \
+  --max-close 500 \
+  --step 5 \
+  --period 0.30 \
+  --start-threshold 20 \
+  --stop-threshold 80 \
+  --release-threshold 10
+```
+
+### 3/4-close handshake
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py \
+  --left \
+  --max-close 750 \
+  --step 20 \
+  --period 0.20 \
+  --start-threshold 20 \
+  --stop-threshold 80 \
+  --release-threshold 10
+```
+
+### Use explicit port and slave ID
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py \
+  --port /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if02-port0 \
+  --slave-id 0x7e \
+  --max-close 750
+```
+
+## Troubleshooting
+
+### `Permission denied`
+
+Example:
+
+```text
+Failed to open Modbus: Permission denied
+```
+
+Fix:
+
+```bash
+~/bin/g1_fix_serial_permissions.sh
+```
+
+Permanent fix:
+
+```bash
+~/bin/g1_fix_serial_permissions.sh --permanent
+sudo reboot
+```
+
+### `Port does not exist`
+
+Check device names:
+
+```bash
+ls -l /dev/serial/by-id/
+ls -l /dev/ttyUSB*
+```
+
+Expected names include:
+
+```text
+usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if01-port0
+usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if02-port0
+```
+
+If the FTDI serial number changed, run with explicit `--port`, or set environment variables before using helper scripts.
+
+### No touch values change
+
+Possible causes:
+
+1. Wrong hand selected.
+2. Wrong serial port.
+3. Wrong slave ID.
+4. Hand is not a tactile-capable model.
+5. Another process is holding the serial port.
+6. Touch thresholds are too high.
+
+Try:
+
+```bash
+python ~/brainco-hand-sdk/python/demo/hand_monitor.py \
+  -m /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if02-port0 460800 126 \
+  touch \
+  --duration 30
+```
+
+### Hand does not move
+
+Check:
+
+1. You are not using `--dry-run`.
+2. Serial permissions are fixed.
+3. The selected port/slave ID responds.
+4. `launch_robot.sh` is not running.
+5. The hand has power.
+
+Try a smaller motion first:
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py \
+  --left \
+  --max-close 300 \
+  --step 5 \
+  --period 0.30
+```
+
+### Hand closes too hard
+
+Reduce these:
+
+```bash
+--max-close
+--step
+```
+
+Increase this:
+
+```bash
+--period
+```
+
+Lower this if you want it to stop earlier:
+
+```bash
+--stop-threshold
+```
+
+Example safer command:
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py \
+  --left \
+  --max-close 450 \
+  --step 5 \
+  --period 0.30 \
+  --stop-threshold 50
+```
+
+### Hand closes immediately even when no one is touching it
+
+Your `start-threshold` is too low, or the tactile readings have an offset.
+
+Run dry-run:
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py --left --dry-run --duration 30
+```
+
+Then set:
+
+```text
+start-threshold > no-touch value
+release-threshold slightly above no-touch value
+```
+
+Example:
+
+```bash
+--release-threshold 20
+--start-threshold 40
+```
+
+## Exit behavior
+
+Press:
+
+```text
+Ctrl-C
+```
+
+The script attempts to command the hand open before exiting. However, this is best-effort. Always test with a safe hand pose and keep the robot clear of people and objects during development.
+
+## Notes on ROS integration
+
+This script is standalone and talks directly to the BrainCo SDK over Modbus. It does not require `launch_robot.sh`, `stark_node`, or the ROS transition node.
+
+A full ROS version would require one of the following:
+
+1. Modify `stark_node` to publish tactile data and subscribe to handshake behavior commands.
+2. Write a separate ROS node that owns the serial port and publishes both tactile state and hand commands.
+3. Add tactile feedback to the existing BrainCo G1 state machine.
+
+For a quick tactile handshake proof-of-concept, the standalone SDK route is simpler and avoids fighting over the serial port.
