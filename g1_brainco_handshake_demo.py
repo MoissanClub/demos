@@ -2,6 +2,13 @@
 """
 BrainCo Revo2 tactile handshake demo for Unitree G1 PC2.
 
+Version note:
+  This version avoids common_imports.has_touch() and
+  common_imports.is_array_pressure_touch(), because some bc-stark-sdk versions
+  do not expose StarkHardwareType.Revo2TouchForce3D, which can cause:
+      AttributeError: type object 'builtins.StarkHardwareType'
+      has no attribute 'Revo2TouchForce3D'
+
 Behavior:
   1. Keep the selected hand fully open while no touch is detected.
   2. When touch/contact is detected, close slowly.
@@ -15,12 +22,6 @@ Important:
     Only one process can own the BrainCo hand serial port.
   - Start with --dry-run first.
   - Start with a conservative --max-close such as 500 or 600 before using 750.
-  - Thresholds are raw tactile values from the BrainCo SDK and should be tuned
-    using hand_monitor.py or this script's live printout.
-
-Known G1 mapping from this setup:
-  left  hand = FTDI if02 = /dev/serial/by-id/...if02-port0 = slave 126 / 0x7e
-  right hand = FTDI if01 = /dev/serial/by-id/...if01-port0 = slave 127 / 0x7f
 """
 
 import argparse
@@ -51,13 +52,13 @@ def add_brainco_sdk_path() -> None:
 add_brainco_sdk_path()
 
 try:
+    # Do NOT import has_touch or is_array_pressure_touch from common_imports.
+    # Those helpers may reference enum names that are absent in older SDK wheels.
     from common_imports import (
         sdk,
         check_sdk,
         int_to_baudrate,
         get_hw_type_name,
-        has_touch,
-        is_array_pressure_touch,
     )
 except Exception as exc:  # pragma: no cover - depends on user's PC2 environment
     print("Failed to import BrainCo SDK helper modules.", file=sys.stderr)
@@ -66,6 +67,89 @@ except Exception as exc:  # pragma: no cover - depends on user's PC2 environment
     print("  ~/stark-serialport-example/python", file=sys.stderr)
     print(f"Import error: {exc}", file=sys.stderr)
     sys.exit(1)
+
+
+def hw_int_value(hw_type: Any) -> Optional[int]:
+    """Best-effort conversion of StarkHardwareType enum to its integer code."""
+    for attr in ("int_value", "value"):
+        if hasattr(hw_type, attr):
+            try:
+                v = getattr(hw_type, attr)
+                return int(v() if callable(v) else v)
+            except Exception:
+                pass
+    try:
+        return int(hw_type)
+    except Exception:
+        return None
+
+
+def hw_name(hw_type: Any) -> str:
+    """Stable-ish string name for hardware enum across SDK versions."""
+    try:
+        return str(hw_type)
+    except Exception:
+        return repr(hw_type)
+
+
+def safe_hw_type_name(hw_type: Any) -> str:
+    """Friendly hardware name without crashing on SDK enum mismatches."""
+    try:
+        return get_hw_type_name(hw_type)
+    except Exception:
+        name = hw_name(hw_type)
+        val = hw_int_value(hw_type)
+        return f"{name}" + (f" ({val})" if val is not None else "")
+
+
+def safe_has_touch(hw_type: Any) -> bool:
+    """
+    Avoid common_imports.has_touch() because it can reference missing enum names.
+
+    Detection order:
+      1. SDK enum method has_touch(), if available and safe.
+      2. Hardware type name contains "Touch".
+      3. Known numeric touch-capable Revo hardware IDs.
+    """
+    if hasattr(hw_type, "has_touch"):
+        try:
+            return bool(hw_type.has_touch())
+        except Exception:
+            pass
+
+    name = hw_name(hw_type).lower()
+    if "touch" in name or "pressure" in name:
+        return True
+
+    value = hw_int_value(hw_type)
+    known_touch_ids = {
+        2,   # Revo1Touch
+        4,   # Revo1AdvancedTouch
+        11,  # Revo2Touch
+        12,  # Revo2TouchPressure
+        13,  # Revo2TouchForce3D, name may not exist in older SDK
+        14,  # Revo2TouchArrayPressure
+        21,  # Revo3UltraTouch
+        22,  # Revo3UltraVisionTouch
+        24,  # Revo3ProTouch
+        27,  # Revo3BasicTouch
+    }
+    return value in known_touch_ids
+
+
+def safe_is_array_pressure(hw_type: Any) -> bool:
+    """Avoid common_imports.is_array_pressure_touch() for SDK compatibility."""
+    if hasattr(hw_type, "is_array_pressure_touch"):
+        try:
+            return bool(hw_type.is_array_pressure_touch())
+        except Exception:
+            pass
+
+    name = hw_name(hw_type).lower()
+    if "arraypressure" in name or "array_pressure" in name:
+        return True
+
+    return hw_int_value(hw_type) == 14
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,8 +173,6 @@ def parse_args() -> argparse.Namespace:
                         help="Below this value counts as released. Default: 10.")
     parser.add_argument("--release-seconds", type=float, default=0.7,
                         help="Seconds below release threshold before reopening. Default: 0.7.")
-    parser.add_argument("--hold-duration", type=float, default=1.0,
-                        help="Seconds to remain in hold before reopening. Default: 1.0.")
 
     parser.add_argument("--max-close", type=int, default=750,
                         help="Maximum close command, 0=open, 1000=fully closed. Default 750 = 3/4 closed.")
@@ -108,11 +190,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duration", type=float, default=0.0,
                         help="Optional max runtime in seconds. 0 means run until Ctrl+C.")
     parser.add_argument("--quiet", action="store_true", help="Print less often.")
+    parser.add_argument("--ignore-touch-type-check", action="store_true",
+                        help="Proceed even if hardware type does not report touch support.")
 
     args = parser.parse_args()
 
     if not args.left and not args.right and args.port is None and args.slave_id is None:
-        # Default to left hand because that is what the user tested first.
         args.left = True
 
     if args.port is None:
@@ -125,7 +208,6 @@ def parse_args() -> argparse.Namespace:
     args.step = max(1, min(1000, args.step))
     args.period = max(0.02, args.period)
     args.release_seconds = max(0.0, args.release_seconds)
-    args.hold_duration = max(0.0, args.hold_duration)
 
     return args
 
@@ -205,11 +287,14 @@ def touch_metric_from_array_pressure(ap_data: Any) -> Tuple[float, str]:
 
 
 async def get_touch_metric(ctx: Any, slave_id: int, hw_type: Any) -> Tuple[float, str]:
-    if is_array_pressure_touch(hw_type):
+    """
+    Read tactile metric. Try the ArrayPressure API only when hardware type says
+    it is array-pressure. Otherwise use the capacitive touch API.
+    """
+    if safe_is_array_pressure(hw_type):
         data = await ctx.get_array_pressure_touch_data(slave_id)
         return touch_metric_from_array_pressure(data)
 
-    # Capacitive Revo2 Touch / Revo1 Touch path.
     items = await ctx.get_touch_sensor_status(slave_id)
     return touch_metric_from_status_items(items)
 
@@ -263,12 +348,16 @@ async def main() -> int:
 
         info = await ctx.get_device_info(args.slave_id)
         hw_type = info.hardware_type
-        print(f"device: {get_hw_type_name(hw_type)}")
-        if not has_touch(hw_type):
+        print(f"device: {safe_hw_type_name(hw_type)}")
+        print(f"raw hardware type: {hw_name(hw_type)}; int={hw_int_value(hw_type)}")
+
+        if not safe_has_touch(hw_type) and not args.ignore_touch_type_check:
             print("ERROR: this hand does not report tactile support.", file=sys.stderr)
+            print("If hand_monitor.py touch works anyway, rerun with --ignore-touch-type-check.", file=sys.stderr)
             return 3
 
         # Revo2 capacitive touch demo enables all five tactile sensors with 0x1F.
+        # Some hardware/SDK variants do not need this; warning is nonfatal.
         try:
             await ctx.touch_sensor_setup(args.slave_id, 0x1F)
             await asyncio.sleep(0.5)
@@ -279,7 +368,6 @@ async def main() -> int:
         close_value = 0
         last_open_command = 0.0
         release_started: Optional[float] = None
-        hold_started: Optional[float] = None
         started_at = time.monotonic()
         tick = 0
 
@@ -302,7 +390,6 @@ async def main() -> int:
             if state == "open_wait":
                 close_value = 0
                 release_started = None
-                hold_started = None
 
                 if now - last_open_command >= args.open_repeat:
                     await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
@@ -315,7 +402,6 @@ async def main() -> int:
             elif state == "closing":
                 if metric >= args.stop_threshold or close_value >= args.max_close:
                     state = "hold"
-                    hold_started = now
                     close_value = min(close_value, args.max_close)
                     await command_positions(ctx, args.slave_id, make_positions(close_value, args.thumb_scale), args.dry_run)
                 else:
@@ -327,26 +413,17 @@ async def main() -> int:
                         release_started = now
                     elif now - release_started >= args.release_seconds:
                         state = "open_wait"
-                        hold_started = None
                         close_value = 0
                         await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
                 else:
                     release_started = None
 
             elif state == "hold":
-                # Hold current command while contact remains.
-                if hold_started is not None and now - hold_started >= args.hold_duration:
-                    state = "open_wait"
-                    hold_started = None
-                    close_value = 0
-                    release_started = None
-                    await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
-                elif metric < args.release_threshold:
+                if metric < args.release_threshold:
                     if release_started is None:
                         release_started = now
                     elif now - release_started >= args.release_seconds:
                         state = "open_wait"
-                        hold_started = None
                         close_value = 0
                         await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
                 else:
@@ -368,6 +445,11 @@ async def main() -> int:
         print("Run your permission script first:", file=sys.stderr)
         print("  ~/bin/g1_fix_serial_permissions.sh", file=sys.stderr)
         return 13
+    except AttributeError as exc:
+        print("ERROR: SDK AttributeError:", exc, file=sys.stderr)
+        print("This is usually a bc-stark-sdk / brainco-hand-sdk version mismatch.", file=sys.stderr)
+        print("Try updating the SDK examples and wheel, or send this full output.", file=sys.stderr)
+        return 14
     except KeyboardInterrupt:
         print("\nInterrupted; opening hand before exit.")
         if ctx is not None:
