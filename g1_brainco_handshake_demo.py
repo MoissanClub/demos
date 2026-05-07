@@ -89,6 +89,8 @@ def parse_args() -> argparse.Namespace:
                         help="Below this value counts as released. Default: 10.")
     parser.add_argument("--release-seconds", type=float, default=0.7,
                         help="Seconds below release threshold before reopening. Default: 0.7.")
+    parser.add_argument("--hold-duration", type=float, default=1.0,
+                        help="Seconds to remain in hold before reopening. Default: 1.0.")
 
     parser.add_argument("--max-close", type=int, default=750,
                         help="Maximum close command, 0=open, 1000=fully closed. Default 750 = 3/4 closed.")
@@ -123,6 +125,7 @@ def parse_args() -> argparse.Namespace:
     args.step = max(1, min(1000, args.step))
     args.period = max(0.02, args.period)
     args.release_seconds = max(0.0, args.release_seconds)
+    args.hold_duration = max(0.0, args.hold_duration)
 
     return args
 
@@ -276,6 +279,7 @@ async def main() -> int:
         close_value = 0
         last_open_command = 0.0
         release_started: Optional[float] = None
+        hold_started: Optional[float] = None
         started_at = time.monotonic()
         tick = 0
 
@@ -298,6 +302,7 @@ async def main() -> int:
             if state == "open_wait":
                 close_value = 0
                 release_started = None
+                hold_started = None
 
                 if now - last_open_command >= args.open_repeat:
                     await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
@@ -310,6 +315,7 @@ async def main() -> int:
             elif state == "closing":
                 if metric >= args.stop_threshold or close_value >= args.max_close:
                     state = "hold"
+                    hold_started = now
                     close_value = min(close_value, args.max_close)
                     await command_positions(ctx, args.slave_id, make_positions(close_value, args.thumb_scale), args.dry_run)
                 else:
@@ -321,6 +327,7 @@ async def main() -> int:
                         release_started = now
                     elif now - release_started >= args.release_seconds:
                         state = "open_wait"
+                        hold_started = None
                         close_value = 0
                         await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
                 else:
@@ -328,11 +335,18 @@ async def main() -> int:
 
             elif state == "hold":
                 # Hold current command while contact remains.
-                if metric < args.release_threshold:
+                if hold_started is not None and now - hold_started >= args.hold_duration:
+                    state = "open_wait"
+                    hold_started = None
+                    close_value = 0
+                    release_started = None
+                    await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
+                elif metric < args.release_threshold:
                     if release_started is None:
                         release_started = now
                     elif now - release_started >= args.release_seconds:
                         state = "open_wait"
+                        hold_started = None
                         close_value = 0
                         await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
                 else:
