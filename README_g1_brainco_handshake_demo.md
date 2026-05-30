@@ -20,6 +20,10 @@ hold:
 
 release:
   When touch is released for release-seconds, reopen the hand.
+
+optional arm action:
+  With --enable-arm, trigger the Unitree high-level "shake hand"
+  arm action when touch first starts the closing state.
 ```
 
 Default closing limit:
@@ -74,16 +78,17 @@ Use `/dev/serial/by-id/...` instead of `/dev/ttyUSB*` where possible, because `/
 
 ## Safety notes
 
-Before moving the hand:
+Before moving the hand or arm:
 
-1. Keep the G1 arm still.
-2. Make sure fingers are clear of hard objects and cables.
+1. Keep the G1 body stable.
+2. Make sure the arm, hand, fingers, face area, people, hard objects, and cables are clear.
 3. Start with `--dry-run`.
 4. Start with a conservative `--max-close`, such as `500`.
 5. Start with slow closing, such as `--step 10 --period 0.25`.
-6. Be ready to press `Ctrl-C`.
+6. Test hand-only motion before adding `--enable-arm`.
+7. Be ready to press `Ctrl-C`.
 
-The script tries to reopen the hand on `Ctrl-C`, but do not rely on software alone as the only safety mechanism.
+The script tries to reopen the hand and release the arm on `Ctrl-C`, but do not rely on software alone as the only safety mechanism.
 
 ## Important: do not run this with `launch_robot.sh`
 
@@ -329,17 +334,17 @@ Use:
 --start-threshold VALUE
   Touch value that starts closing from open.
   Default:
-    20
+    50
 
 --stop-threshold VALUE
   Touch value that stops closing.
   Default:
-    80
+    250
 
 --release-threshold VALUE
   If touch remains below this value for release-seconds, the hand opens.
   Default:
-    10
+    20
 
 --release-seconds SECONDS
   Release debounce time.
@@ -351,19 +356,19 @@ Use:
   Range:
     0 to 1000
   Default:
-    750
+    500
 
 --step VALUE
   Close-command increment per control loop.
   Smaller = slower and safer.
   Default:
-    25
+    50
 
 --period SECONDS
   Control-loop period.
   Larger = slower.
   Default:
-    0.15
+    0.10
 
 --thumb-scale SCALE
   Scale thumb and thumb_aux closing relative to other fingers.
@@ -373,7 +378,7 @@ Use:
     1.0
 
 --dry-run
-  Read sensors and print decisions, but do not command movement.
+  Read sensors and print decisions, but do not command hand or arm movement.
 
 --duration SECONDS
   Run for a fixed duration.
@@ -383,6 +388,30 @@ Use:
 
 --quiet
   Print less frequently.
+
+--enable-arm
+  Trigger a Unitree high-level arm action when touch first starts the closing state.
+  Default:
+    disabled
+
+--arm-network-interface IFACE
+  DDS network interface for the Unitree arm action service, for example eth0.
+  If omitted, Unitree SDK auto-detection is used.
+
+--arm-action NAME
+  Unitree arm action to run when touch starts closing.
+  Default:
+    shake hand
+
+--arm-release-action NAME
+  Unitree arm action to run after arm-release-delay, and on Ctrl-C/duration exit.
+  Default:
+    release arm
+
+--arm-release-delay SECONDS
+  Seconds to wait after arm-action before running arm-release-action.
+  Default:
+    2.0
 ```
 
 ## Useful examples
@@ -424,6 +453,23 @@ python ~/demos/g1_brainco_handshake_demo.py \
   --stop-threshold 80 \
   --release-threshold 10
 ```
+
+### Hand close plus Unitree arm shake
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py \
+  --right \
+  --enable-arm \
+  --arm-network-interface eth0 \
+  --max-close 500 \
+  --step 10 \
+  --period 0.25 \
+  --start-threshold 20 \
+  --stop-threshold 80 \
+  --release-threshold 10
+```
+
+When touch reaches `--start-threshold`, the script enters `closing` and triggers Unitree's built-in `shake hand` arm action. After `--arm-release-delay`, it sends `release arm`.
 
 ### Use explicit port and slave ID
 

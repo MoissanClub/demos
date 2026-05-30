@@ -28,6 +28,7 @@ import argparse
 import asyncio
 import os
 import sys
+import threading
 import time
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
@@ -36,6 +37,8 @@ DEFAULT_LEFT_PORT = "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3
 DEFAULT_RIGHT_PORT = "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if01-port0"
 DEFAULT_LEFT_ID = 0x7E
 DEFAULT_RIGHT_ID = 0x7F
+DEFAULT_ARM_ACTION = "shake hand"
+DEFAULT_ARM_RELEASE_ACTION = "release arm"
 
 
 def add_brainco_sdk_path() -> None:
@@ -50,6 +53,19 @@ def add_brainco_sdk_path() -> None:
 
 
 add_brainco_sdk_path()
+
+
+def add_unitree_sdk_path() -> None:
+    candidates = [
+        os.environ.get("UNITREE_SDK2_PYTHON", ""),
+        os.path.expanduser("~/unitree_sdk2_python"),
+    ]
+    for path in candidates:
+        if path and os.path.isdir(path) and path not in sys.path:
+            sys.path.insert(0, path)
+
+
+add_unitree_sdk_path()
 
 try:
     # Do NOT import has_touch or is_array_pressure_touch from common_imports.
@@ -195,6 +211,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ignore-touch-type-check", action="store_true",
                         help="Proceed even if hardware type does not report touch support.")
 
+    parser.add_argument("--enable-arm", action="store_true",
+                        help="Also trigger a Unitree high-level arm action when touch starts closing.")
+    parser.add_argument("--arm-network-interface", default=None,
+                        help="DDS network interface for Unitree arm action service, e.g. eth0. Default: auto.")
+    parser.add_argument("--arm-action", default=DEFAULT_ARM_ACTION,
+                        help=f"Unitree arm action to run on touch. Default: {DEFAULT_ARM_ACTION!r}.")
+    parser.add_argument("--arm-release-action", default=DEFAULT_ARM_RELEASE_ACTION,
+                        help=f"Unitree arm action to run after the shake. Default: {DEFAULT_ARM_RELEASE_ACTION!r}.")
+    parser.add_argument("--arm-release-delay", type=float, default=2.0,
+                        help="Seconds after arm action before release action. Default: 2.0.")
+
     args = parser.parse_args()
 
     if not args.left and not args.right and args.port is None and args.slave_id is None:
@@ -211,6 +238,7 @@ def parse_args() -> argparse.Namespace:
     args.period = max(0.02, args.period)
     args.release_seconds = max(0.0, args.release_seconds)
     args.hold_duration = max(0.0, args.hold_duration)
+    args.arm_release_delay = max(0.0, args.arm_release_delay)
 
     return args
 
@@ -315,6 +343,114 @@ async def command_positions(ctx: Any, slave_id: int, positions: Sequence[int], d
     await ctx.set_finger_positions(slave_id, [int(x) for x in positions])
 
 
+class ArmActionRunner:
+    """Nonblocking wrapper around Unitree's high-level G1 arm action service."""
+
+    def __init__(
+        self,
+        enabled: bool,
+        dry_run: bool,
+        network_interface: Optional[str],
+        action_name: str,
+        release_action_name: str,
+        release_delay: float,
+    ) -> None:
+        self.enabled = enabled
+        self.dry_run = dry_run
+        self.network_interface = network_interface
+        self.action_name = action_name
+        self.release_action_name = release_action_name
+        self.release_delay = release_delay
+        self.client: Any = None
+        self.action_map: Any = None
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+
+    def init(self) -> None:
+        if not self.enabled:
+            return
+
+        if self.dry_run:
+            print("arm: dry-run enabled; arm actions will be logged but not executed.")
+            return
+
+        try:
+            from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+            from unitree_sdk2py.g1.arm.g1_arm_action_client import (
+                G1ArmActionClient,
+                action_map,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "failed to import Unitree arm action client; set UNITREE_SDK2_PYTHON "
+                "or install unitree_sdk2_python; underlying error: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        if self.action_name not in action_map:
+            raise RuntimeError(f"unknown arm action {self.action_name!r}; known: {sorted(action_map)}")
+        if self.release_action_name and self.release_action_name not in action_map:
+            raise RuntimeError(
+                f"unknown arm release action {self.release_action_name!r}; known: {sorted(action_map)}"
+            )
+
+        if self.network_interface:
+            ChannelFactoryInitialize(0, self.network_interface)
+        else:
+            ChannelFactoryInitialize(0)
+
+        self.action_map = action_map
+        self.client = G1ArmActionClient()
+        self.client.SetTimeout(10.0)
+        self.client.Init()
+        print(
+            "arm: enabled; "
+            f"action={self.action_name!r}, release={self.release_action_name!r}, "
+            f"interface={self.network_interface or 'auto'}"
+        )
+
+    def trigger(self) -> None:
+        if not self.enabled:
+            return
+
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._thread = threading.Thread(target=self._run_sequence, name="arm_action", daemon=True)
+            self._thread.start()
+
+    def _run_sequence(self) -> None:
+        if self.dry_run:
+            print(f"arm: would execute {self.action_name!r}")
+            if self.release_action_name:
+                print(f"arm: would execute {self.release_action_name!r} after {self.release_delay:.1f}s")
+            return
+
+        try:
+            action_id = self.action_map[self.action_name]
+            ret = self.client.ExecuteAction(action_id)
+            print(f"arm: executed {self.action_name!r}, ret={ret}")
+
+            if self.release_action_name:
+                time.sleep(self.release_delay)
+                release_id = self.action_map[self.release_action_name]
+                ret = self.client.ExecuteAction(release_id)
+                print(f"arm: executed {self.release_action_name!r}, ret={ret}")
+        except Exception as exc:
+            print(f"WARNING: arm action failed: {exc}", file=sys.stderr)
+
+    def release_now(self) -> None:
+        if not self.enabled or self.dry_run or not self.release_action_name:
+            return
+
+        try:
+            release_id = self.action_map[self.release_action_name]
+            ret = self.client.ExecuteAction(release_id)
+            print(f"arm: executed {self.release_action_name!r}, ret={ret}")
+        except Exception as exc:
+            print(f"WARNING: arm release failed: {exc}", file=sys.stderr)
+
+
 async def maybe_get_motor_positions(ctx: Any, slave_id: int) -> Optional[List[int]]:
     try:
         status = await ctx.get_motor_status(slave_id)
@@ -343,10 +479,24 @@ async def main() -> int:
     print(f"release_threshold: {args.release_threshold}")
     print(f"max_close:         {args.max_close} / 1000")
     print(f"dry_run:           {args.dry_run}")
+    print(f"enable_arm:        {args.enable_arm}")
+    if args.enable_arm:
+        print()
+        print("ALERT: get the robot to regular mode")
+        print("       Use the controller sequence: Damping L2+B -> Ready L2+Up -> Regular R1+X")
     print()
 
     ctx = None
+    arm = ArmActionRunner(
+        enabled=args.enable_arm,
+        dry_run=args.dry_run,
+        network_interface=args.arm_network_interface,
+        action_name=args.arm_action,
+        release_action_name=args.arm_release_action,
+        release_delay=args.arm_release_delay,
+    )
     try:
+        arm.init()
         ctx = await sdk.modbus_open(args.port, baud_enum)
 
         info = await ctx.get_device_info(args.slave_id)
@@ -387,6 +537,7 @@ async def main() -> int:
             if args.duration > 0 and now - started_at >= args.duration:
                 print("Duration reached; opening hand and exiting.")
                 await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
+                arm.release_now()
                 return 0
 
             metric, detail = await get_touch_metric(ctx, args.slave_id, hw_type)
@@ -403,6 +554,7 @@ async def main() -> int:
                 if metric >= args.start_threshold:
                     state = "closing"
                     close_value = 0
+                    arm.trigger()
 
             elif state == "closing":
                 if metric >= args.stop_threshold or close_value >= args.max_close:
@@ -459,6 +611,9 @@ async def main() -> int:
         print("Run your permission script first:", file=sys.stderr)
         print("  ~/bin/g1_fix_serial_permissions.sh", file=sys.stderr)
         return 13
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 15
     except AttributeError as exc:
         print("ERROR: SDK AttributeError:", exc, file=sys.stderr)
         print("This is usually a bc-stark-sdk / brainco-hand-sdk version mismatch.", file=sys.stderr)
@@ -471,6 +626,7 @@ async def main() -> int:
                 await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
             except Exception:
                 pass
+        arm.release_now()
         return 130
     finally:
         if ctx is not None:
