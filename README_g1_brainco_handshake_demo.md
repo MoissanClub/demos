@@ -20,6 +20,8 @@ hold:
 
 release:
   When touch is released for release-seconds, reopen the hand.
+  If an arm action is enabled, also send the arm release action immediately.
+  The next handshake is blocked until touch is clearly released again.
 
 optional arm action:
   With --enable-arm, trigger the Unitree high-level "shake hand"
@@ -187,9 +189,9 @@ While it is running, touch the fingertips and palm contact areas. Watch the `tou
 Example output:
 
 ```text
-open_wait  touch=   0.00 close_cmd=   0 | thumb=0 index=0 middle=0 ring=0 pinky=0
-closing    touch=  35.00 close_cmd=  20 | thumb=5 index=35 middle=0 ring=0 pinky=0
-hold       touch= 110.00 close_cmd= 220 | thumb=20 index=110 middle=70 ring=0 pinky=0
+open_wait armed    touch=   0.00 close_cmd=   0 | thumb=0 index=0 middle=0 ring=0 pinky=0
+closing   disarmed touch=  35.00 close_cmd=  20 | thumb=5 index=35 middle=0 ring=0 pinky=0
+hold      disarmed touch= 110.00 close_cmd= 220 | thumb=20 index=110 middle=70 ring=0 pinky=0
 ```
 
 ## First motion test: conservative
@@ -347,7 +349,9 @@ Use:
     20
 
 --release-seconds SECONDS
-  Release debounce time.
+  Release debounce time. While closing or holding, confirmed release opens
+  the hand, sends the arm release action, and prevents another activation
+  until touch is clearly released again.
   Default:
     0.7
 

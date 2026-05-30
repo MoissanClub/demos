@@ -365,6 +365,7 @@ class ArmActionRunner:
         self.action_map: Any = None
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
+        self._cancel_delayed_release = threading.Event()
 
     def init(self) -> None:
         if not self.enabled:
@@ -416,6 +417,7 @@ class ArmActionRunner:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
+            self._cancel_delayed_release.clear()
             self._thread = threading.Thread(target=self._run_sequence, name="arm_action", daemon=True)
             self._thread.start()
 
@@ -432,10 +434,10 @@ class ArmActionRunner:
             print(f"arm: executed {self.action_name!r}, ret={ret}")
 
             if self.release_action_name:
-                time.sleep(self.release_delay)
-                release_id = self.action_map[self.release_action_name]
-                ret = self.client.ExecuteAction(release_id)
-                print(f"arm: executed {self.release_action_name!r}, ret={ret}")
+                if not self._cancel_delayed_release.wait(self.release_delay):
+                    release_id = self.action_map[self.release_action_name]
+                    ret = self.client.ExecuteAction(release_id)
+                    print(f"arm: executed {self.release_action_name!r}, ret={ret}")
         except Exception as exc:
             print(f"WARNING: arm action failed: {exc}", file=sys.stderr)
 
@@ -443,6 +445,7 @@ class ArmActionRunner:
         if not self.enabled or self.dry_run or not self.release_action_name:
             return
 
+        self._cancel_delayed_release.set()
         try:
             release_id = self.action_map[self.release_action_name]
             ret = self.client.ExecuteAction(release_id)
@@ -521,12 +524,15 @@ async def main() -> int:
         close_value = 0
         last_open_command = 0.0
         release_started: Optional[float] = None
+        rearm_started: Optional[float] = None
         hold_started: Optional[float] = None
+        ready_for_contact = True
         started_at = time.monotonic()
         tick = 0
 
         print("Starting loop. Press Ctrl+C to stop.")
         print("State legend: open_wait -> closing -> hold -> open_wait")
+        print("Release behavior: confirmed release opens hand, releases arm, and waits for rearm.")
         print()
 
         # Start fully open.
@@ -544,16 +550,28 @@ async def main() -> int:
 
             if state == "open_wait":
                 close_value = 0
-                release_started = None
                 hold_started = None
 
                 if now - last_open_command >= args.open_repeat:
                     await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
                     last_open_command = now
 
-                if metric >= args.start_threshold:
+                if not ready_for_contact:
+                    if metric < args.release_threshold:
+                        if rearm_started is None:
+                            rearm_started = now
+                        elif now - rearm_started >= args.release_seconds:
+                            ready_for_contact = True
+                            rearm_started = None
+                    else:
+                        rearm_started = None
+
+                if ready_for_contact and metric >= args.start_threshold:
                     state = "closing"
                     close_value = 0
+                    release_started = None
+                    rearm_started = None
+                    ready_for_contact = False
                     arm.trigger()
 
             elif state == "closing":
@@ -570,10 +588,13 @@ async def main() -> int:
                     if release_started is None:
                         release_started = now
                     elif now - release_started >= args.release_seconds:
+                        print("Release confirmed during closing; opening hand and releasing arm.")
                         state = "open_wait"
                         hold_started = None
                         close_value = 0
                         await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
+                        arm.release_now()
+                        rearm_started = None
                 else:
                     release_started = None
 
@@ -584,14 +605,19 @@ async def main() -> int:
                     close_value = 0
                     release_started = None
                     await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
+                    arm.release_now()
+                    rearm_started = None
                 elif metric < args.release_threshold:
                     if release_started is None:
                         release_started = now
                     elif now - release_started >= args.release_seconds:
+                        print("Release confirmed during hold; opening hand and releasing arm.")
                         state = "open_wait"
                         hold_started = None
                         close_value = 0
                         await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
+                        arm.release_now()
+                        rearm_started = None
                 else:
                     release_started = None
 
@@ -601,7 +627,8 @@ async def main() -> int:
 
             if (not args.quiet) or tick % max(1, int(1.0 / args.period)) == 0:
                 pos_str = f" motor={positions}" if positions is not None else ""
-                print(f"{state:10s} touch={metric:7.2f} close_cmd={close_value:4d}{pos_str} | {detail}")
+                armed = " armed" if ready_for_contact else " disarmed"
+                print(f"{state:10s}{armed:9s} touch={metric:7.2f} close_cmd={close_value:4d}{pos_str} | {detail}")
 
             tick += 1
             await asyncio.sleep(args.period)
