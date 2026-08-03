@@ -29,6 +29,7 @@ class HandshakeDecision:
     command_close: Optional[int] = None
     trigger_arm: bool = False
     release_arm: bool = False
+    entered_hold: bool = False
     event: Optional[str] = None
 
 
@@ -87,7 +88,11 @@ class HandshakeStateMachine:
         if self._release_confirmed(metric, now):
             return self._open_after_handshake("release_during_closing")
 
-        return self._decision(command_close=self.close_value, event=event)
+        return self._decision(
+            command_close=self.close_value,
+            entered_hold=self.state == HandshakeState.HOLD,
+            event=event,
+        )
 
     def _update_hold(self, metric: float, now: float) -> HandshakeDecision:
         if self.hold_started is not None and now - self.hold_started >= self.config.hold_duration:
@@ -121,6 +126,7 @@ class HandshakeStateMachine:
         command_close: Optional[int] = None,
         trigger_arm: bool = False,
         release_arm: bool = False,
+        entered_hold: bool = False,
         event: Optional[str] = None,
     ) -> HandshakeDecision:
         return HandshakeDecision(
@@ -129,5 +135,6 @@ class HandshakeStateMachine:
             command_close=command_close,
             trigger_arm=trigger_arm,
             release_arm=release_arm,
+            entered_hold=entered_hold,
             event=event,
         )

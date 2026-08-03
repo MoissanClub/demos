@@ -30,7 +30,11 @@ class HandshakeStateMachineTests(unittest.TestCase):
 
         decision = machine.update(260.0, 1.2)
         self.assertEqual(decision.state, HandshakeState.HOLD)
+        self.assertTrue(decision.entered_hold)
         self.assertEqual(decision.event, "pressure_limit_reached")
+
+        decision = machine.update(260.0, 1.25)
+        self.assertFalse(decision.entered_hold)
 
         machine.update(0.0, 1.3)
         decision = machine.update(0.0, 2.0)
@@ -69,6 +73,7 @@ class HandshakeStateMachineTests(unittest.TestCase):
         decision = machine.update(60.0, 0.3)
 
         self.assertEqual(decision.state, HandshakeState.HOLD)
+        self.assertTrue(decision.entered_hold)
         self.assertEqual(decision.close_value, 100)
         self.assertEqual(decision.event, "max_close_reached")
 

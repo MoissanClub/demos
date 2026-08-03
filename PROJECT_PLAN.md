@@ -574,6 +574,26 @@ Each level must require an explicit configuration flag. Dry-run or hand-only beh
 - [ ] Add operator-confirmed half-raise.
 - [ ] Add autonomous half-raise and safe return.
 - [ ] Decide whether face recognition provides enough value to justify its privacy cost.
+- [ ] Extend greetings beyond Chinese using configurable pre-rendered audio playback.
+
+### Next step: non-Chinese greeting support
+
+The G1 built-in `TtsMaker()` service currently produces acceptable Mandarin but
+does not provide reliable English or general multilingual pronunciation. Add a
+language-independent greeting path using `AudioClient.PlayStream()`:
+
+1. Add `greeting_audio_file` and `greeting_language` to `handshake_config.json`.
+2. Load and validate a local WAV asset before starting robot motion.
+3. Convert or require the exact PCM sample format accepted by the Unitree audio service.
+4. Stream the audio asynchronously when the controller enters `hold`.
+5. Retain built-in TTS for Mandarin and use audio-file playback for other languages.
+6. Define deterministic fallback behavior when the file is missing, malformed, or playback fails.
+7. Add unit tests for language routing, audio validation, one-shot playback, and fallback behavior.
+8. Add documented English and Mandarin example configurations.
+9. Keep generated audio licensing and voice-consent metadata with each distributable asset.
+
+Exit criterion: Mandarin TTS and at least one English WAV greeting both play
+clearly on the robot without blocking hand control or affecting safe cleanup.
 
 ## 18. Decisions to make
 
@@ -619,3 +639,6 @@ These decisions should be recorded here as they are resolved:
 |---|---:|---|
 | 2026-08-04 | 0.1 | Initial phased project plan created from design brainstorming. |
 | 2026-08-04 | 0.2 | Implemented Phase 0 software hardening and tests; physical validation remains open. |
+| 2026-08-04 | 0.3 | Added a configurable, non-blocking speaker greeting on entry to the hold state. |
+| 2026-08-04 | 0.4 | Switched the initial greeting to Mandarin for compatibility with the G1 built-in TTS service. |
+| 2026-08-04 | 0.5 | Documented non-Chinese greeting support through configurable PCM/WAV streaming as the next audio step. |

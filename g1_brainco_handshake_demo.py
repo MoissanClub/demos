@@ -33,6 +33,7 @@ import time
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 from handshake_state import HandshakeConfig, HandshakeStateMachine
+from handshake_speaker import SpeakerRunner, load_demo_config
 
 
 DEFAULT_LEFT_PORT = "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if02-port0"
@@ -41,6 +42,7 @@ DEFAULT_LEFT_ID = 0x7E
 DEFAULT_RIGHT_ID = 0x7F
 DEFAULT_ARM_ACTION = "shake hand"
 DEFAULT_ARM_RELEASE_ACTION = "release arm"
+DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "handshake_config.json")
 
 
 def add_brainco_sdk_path() -> None:
@@ -180,6 +182,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     hand.add_argument("--right", action="store_true", help="Use right hand, slave 0x7f on FTDI if01.")
 
     parser.add_argument("--port", default=None, help="Override serial port.")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
+                        help=f"JSON behavior config. Default: {DEFAULT_CONFIG_PATH}.")
     parser.add_argument("--slave-id", type=lambda x: int(x, 0), default=None, help="Override slave ID, e.g. 126 or 0x7e.")
     parser.add_argument("--baud", type=int, default=460800, help="Modbus baudrate. Default: 460800.")
 
@@ -218,7 +222,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--enable-arm", action="store_true",
                         help="Also trigger a Unitree high-level arm action when touch starts closing.")
     parser.add_argument("--arm-network-interface", default=None,
-                        help="DDS network interface for Unitree arm action service, e.g. eth0. Default: auto.")
+                        help="DDS interface for Unitree arm and speaker services, e.g. eth0. Default: auto.")
     parser.add_argument("--arm-action", default=DEFAULT_ARM_ACTION,
                         help=f"Unitree arm action to run on touch. Default: {DEFAULT_ARM_ACTION!r}.")
     parser.add_argument("--arm-release-action", default=DEFAULT_ARM_RELEASE_ACTION,
@@ -397,7 +401,7 @@ class ArmActionRunner:
         self._cancel_delayed_release = threading.Event()
         self._release_sent = threading.Event()
 
-    def init(self) -> None:
+    def init(self, initialize_channel: bool = True) -> None:
         if not self.enabled:
             return
 
@@ -406,11 +410,12 @@ class ArmActionRunner:
             return
 
         try:
-            from unitree_sdk2py.core.channel import ChannelFactoryInitialize
             from unitree_sdk2py.g1.arm.g1_arm_action_client import (
                 G1ArmActionClient,
                 action_map,
             )
+            if initialize_channel:
+                from unitree_sdk2py.core.channel import ChannelFactoryInitialize
         except Exception as exc:
             raise RuntimeError(
                 "failed to import Unitree arm action client; set UNITREE_SDK2_PYTHON "
@@ -425,10 +430,11 @@ class ArmActionRunner:
                 f"unknown arm release action {self.release_action_name!r}; known: {sorted(action_map)}"
             )
 
-        if self.network_interface:
-            ChannelFactoryInitialize(0, self.network_interface)
-        else:
-            ChannelFactoryInitialize(0)
+        if initialize_channel:
+            if self.network_interface:
+                ChannelFactoryInitialize(0, self.network_interface)
+            else:
+                ChannelFactoryInitialize(0)
 
         self.action_map = action_map
         self.client = G1ArmActionClient()
@@ -505,6 +511,12 @@ async def main() -> int:
     args = parse_args()
     check_sdk()
 
+    try:
+        greeting_phrase, speaker_id = load_demo_config(args.config)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
     if not os.path.exists(args.port):
         print(f"ERROR: port does not exist: {args.port}", file=sys.stderr)
         print("Run: ls -l /dev/serial/by-id/", file=sys.stderr)
@@ -521,6 +533,7 @@ async def main() -> int:
     print(f"release_threshold: {args.release_threshold}")
     print(f"max_close:         {args.max_close} / 1000")
     print(f"sensor_timeout:    {args.sensor_timeout}s")
+    print(f"greeting_phrase:   {greeting_phrase!r}")
     print(f"dry_run:           {args.dry_run}")
     print(f"enable_arm:        {args.enable_arm}")
     if args.enable_arm:
@@ -538,8 +551,15 @@ async def main() -> int:
         release_action_name=args.arm_release_action,
         release_delay=args.arm_release_delay,
     )
+    speaker = SpeakerRunner(
+        phrase=greeting_phrase,
+        speaker_id=speaker_id,
+        dry_run=args.dry_run,
+        network_interface=args.arm_network_interface,
+    )
     try:
         arm.init()
+        speaker.init(channel_initialized=args.enable_arm and not args.dry_run)
         ctx = await sdk.modbus_open(args.port, baud_enum)
 
         info = await ctx.get_device_info(args.slave_id)
@@ -627,6 +647,8 @@ async def main() -> int:
                 )
             if decision.trigger_arm:
                 arm.trigger()
+            if decision.entered_hold:
+                speaker.greet()
             if decision.release_arm:
                 print(f"{decision.event}; opening hand and releasing arm.")
                 arm.release_now()

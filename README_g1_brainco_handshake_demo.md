@@ -17,6 +17,7 @@ hold:
   Stop closing when either:
     1. tactile value reaches the stop threshold, or
     2. commanded close reaches max-close.
+  Say the configured greeting once when entering this state.
   Reopen after hold-duration even if contact continues.
 
 release:
@@ -45,6 +46,9 @@ Recommended location on PC2:
 
 ```text
 ~/demos/g1_brainco_handshake_demo.py
+~/demos/handshake_state.py
+~/demos/handshake_speaker.py
+~/demos/handshake_config.json
 ~/bin/g1_fix_serial_permissions.sh
 ```
 
@@ -114,6 +118,7 @@ Copy the script to the G1 PC2:
 ```bash
 mkdir -p ~/demos
 cp g1_brainco_handshake_demo.py ~/demos/
+cp handshake_state.py handshake_speaker.py handshake_config.json ~/demos/
 chmod +x ~/demos/g1_brainco_handshake_demo.py
 ```
 
@@ -306,6 +311,11 @@ Use:
 ## Command reference
 
 ```text
+--config PATH
+  Load behavior settings from this JSON file.
+  Default:
+    handshake_config.json next to the demo script
+
 --left
   Use the left hand.
   Default left port:
@@ -420,7 +430,7 @@ Use:
     disabled
 
 --arm-network-interface IFACE
-  DDS network interface for the Unitree arm action service, for example eth0.
+  DDS network interface shared by the Unitree arm and speaker services, for example eth0.
   If omitted, Unitree SDK auto-detection is used.
 
 --arm-action NAME
@@ -439,6 +449,23 @@ Use:
   Default:
     4.0
 ```
+
+## Greeting configuration
+
+The speaker greeting is loaded from `handshake_config.json`:
+
+```json
+{
+  "greeting_phrase": "很高兴认识你",
+  "speaker_id": 0
+}
+```
+
+The phrase is spoken once when the controller enters `hold`, whether hold was
+caused by the tactile stop threshold or the maximum close command. Speech runs
+in a background thread so it does not block hand control. If the Unitree audio
+service is unavailable, the script logs a warning and continues the handshake
+without speech.
 
 ## Useful examples
 
