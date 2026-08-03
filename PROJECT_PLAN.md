@@ -575,6 +575,7 @@ Each level must require an explicit configuration flag. Dry-run or hand-only beh
 - [ ] Add autonomous half-raise and safe return.
 - [ ] Decide whether face recognition provides enough value to justify its privacy cost.
 - [ ] Extend greetings beyond Chinese using configurable pre-rendered audio playback.
+- [ ] Add a small, bounded arm oscillation during `hold` after joint telemetry and control-mode validation.
 
 ### Next step: non-Chinese greeting support
 
@@ -594,6 +595,61 @@ language-independent greeting path using `AudioClient.PlayStream()`:
 
 Exit criterion: Mandarin TTS and at least one English WAV greeting both play
 clearly on the robot without blocking hand control or affecting safe cleanup.
+
+### Future step: controlled hold-state arm shake
+
+Add a subtle arm oscillation while the handshake controller is in `hold`. This
+must not be implemented by repeatedly invoking the fixed high-level `shake hand`
+action, and custom joint commands must not run concurrently with an incompatible
+high-level arm controller.
+
+Prerequisites:
+
+1. Complete the Unitree read-only telemetry probe.
+2. Confirm the active arm's joint names, indices, units, limits, and state rate.
+3. Record the joint trajectory produced by the current high-level handshake action.
+4. Identify which single joint or minimal joint set produces a natural vertical shake.
+5. Verify the supported control mode and safe transition between high-level and bounded joint control.
+
+Initial motion envelope for hardware validation:
+
+- One verified arm joint, or the smallest safe coupled joint set
+- Sinusoidal trajectory with smooth acceleration
+- Approximately 1-2 degrees of amplitude
+- Approximately 1-1.5 Hz
+- Maximum duration of 2-3 seconds
+- Existing joint position, velocity, acceleration, torque, and workspace limits remain authoritative
+
+Configuration should eventually include:
+
+```yaml
+hold_shake_enabled: false
+hold_shake_amplitude_degrees: 1.0
+hold_shake_frequency_hz: 1.0
+hold_shake_duration_seconds: 2.0
+```
+
+The oscillation must stop immediately when:
+
+- The controller exits `hold`
+- Tactile release begins
+- Pressure or estimated torque exceeds a safety limit
+- Tactile or joint telemetry becomes stale
+- The configured shake duration expires
+- An operator cancels or emergency stop occurs
+- Any arm command or state validation fails
+
+Rollout order:
+
+1. Generate and plot the trajectory without hardware.
+2. Run dry-run command logging against live joint telemetry.
+3. Test arm-only motion with no person and no hand contact.
+4. Test with an open robotic hand.
+5. Test a loose human handshake at minimum amplitude and duration.
+6. Increase parameters only within the verified motion envelope.
+
+Exit criterion: a repeatable, subtle hold-state shake stops before the hand-first
+`releasing` sequence and cannot interfere with measured-open confirmation or arm lowering.
 
 ## 18. Decisions to make
 
@@ -643,3 +699,4 @@ These decisions should be recorded here as they are resolved:
 | 2026-08-04 | 0.4 | Switched the initial greeting to Mandarin for compatibility with the G1 built-in TTS service. |
 | 2026-08-04 | 0.5 | Documented non-Chinese greeting support through configurable PCM/WAV streaming as the next audio step. |
 | 2026-08-04 | 0.6 | Added a hand-first releasing state with measured-open confirmation before lowering the arm. |
+| 2026-08-04 | 0.7 | Added a future bounded hold-state arm oscillation plan gated on telemetry and controller-mode validation. |
