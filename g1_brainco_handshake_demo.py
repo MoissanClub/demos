@@ -219,8 +219,8 @@ def parse_args() -> argparse.Namespace:
                         help=f"Unitree arm action to run on touch. Default: {DEFAULT_ARM_ACTION!r}.")
     parser.add_argument("--arm-release-action", default=DEFAULT_ARM_RELEASE_ACTION,
                         help=f"Unitree arm action to run after the shake. Default: {DEFAULT_ARM_RELEASE_ACTION!r}.")
-    parser.add_argument("--arm-release-delay", type=float, default=2.0,
-                        help="Seconds after arm action before release action. Default: 2.0.")
+    parser.add_argument("--arm-release-delay", type=float, default=4.0,
+                        help="Seconds after arm action before release action. Default: 4.0.")
 
     args = parser.parse_args()
 

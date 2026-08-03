@@ -414,8 +414,9 @@ Use:
 
 --arm-release-delay SECONDS
   Seconds to wait after arm-action before running arm-release-action.
+  Increase this if the arm raises but releases before the visible shake.
   Default:
-    2.0
+    4.0
 ```
 
 ## Useful examples
@@ -473,7 +474,7 @@ python ~/demos/g1_brainco_handshake_demo.py \
   --release-threshold 10
 ```
 
-When touch reaches `--start-threshold`, the script enters `closing` and triggers Unitree's built-in `shake hand` arm action. After `--arm-release-delay`, it sends `release arm`.
+When touch reaches `--start-threshold`, the script enters `closing` and triggers Unitree's built-in `shake hand` arm action. After `--arm-release-delay`, it sends `release arm`. Use a longer delay, such as `--arm-release-delay 5`, if the arm raises but does not visibly shake before releasing.
 
 ### Use explicit port and slave ID
 
