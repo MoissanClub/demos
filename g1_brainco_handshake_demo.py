@@ -32,7 +32,7 @@ import threading
 import time
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
-from handshake_state import HandshakeConfig, HandshakeStateMachine
+from handshake_state import HandshakeConfig, HandshakeState, HandshakeStateMachine
 from handshake_speaker import SpeakerRunner, load_demo_config
 
 
@@ -208,6 +208,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="Repeat open command every N seconds while idle. Default: 1.0.")
     parser.add_argument("--sensor-timeout", type=float, default=1.0,
                         help="Maximum seconds allowed for one tactile read. Default: 1.0.")
+    parser.add_argument("--open-position-threshold", type=int, default=100,
+                        help="All measured finger positions must be at or below this before arm release. Default: 100.")
+    parser.add_argument("--open-confirm-timeout", type=float, default=2.0,
+                        help="Maximum seconds to wait for measured-open confirmation. Default: 2.0.")
 
     parser.add_argument("--thumb-scale", type=float, default=1.0,
                         help="Scale thumb/thumb_aux close target relative to fingers. Default: 1.0.")
@@ -228,7 +232,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--arm-release-action", default=DEFAULT_ARM_RELEASE_ACTION,
                         help=f"Unitree arm action to run after the shake. Default: {DEFAULT_ARM_RELEASE_ACTION!r}.")
     parser.add_argument("--arm-release-delay", type=float, default=4.0,
-                        help="Seconds after arm action before release action. Default: 4.0.")
+                        help="Deprecated compatibility option; delayed release is disabled for safety.")
 
     args = parser.parse_args(argv)
 
@@ -255,6 +259,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         parser.error("duration must be nonnegative")
     if args.open_repeat <= 0 or args.sensor_timeout <= 0:
         parser.error("open-repeat and sensor-timeout must be greater than zero")
+    if not 0 <= args.open_position_threshold <= 1000:
+        parser.error("open-position-threshold must be between 0 and 1000")
+    if args.open_confirm_timeout <= 0:
+        parser.error("open-confirm-timeout must be greater than zero")
     if not 0.0 <= args.thumb_scale <= 1.0:
         parser.error("thumb-scale must be between 0.0 and 1.0")
     if not 0 <= args.slave_id <= 0xFF:
@@ -385,20 +393,17 @@ class ArmActionRunner:
         network_interface: Optional[str],
         action_name: str,
         release_action_name: str,
-        release_delay: float,
     ) -> None:
         self.enabled = enabled
         self.dry_run = dry_run
         self.network_interface = network_interface
         self.action_name = action_name
         self.release_action_name = release_action_name
-        self.release_delay = release_delay
         self.client: Any = None
         self.action_map: Any = None
         self._thread_lock = threading.Lock()
         self._client_lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
-        self._cancel_delayed_release = threading.Event()
         self._release_sent = threading.Event()
 
     def init(self, initialize_channel: bool = True) -> None:
@@ -453,7 +458,6 @@ class ArmActionRunner:
         with self._thread_lock:
             if self._thread is not None and self._thread.is_alive():
                 return
-            self._cancel_delayed_release.clear()
             self._release_sent.clear()
             self._thread = threading.Thread(target=self._run_sequence, name="arm_action", daemon=True)
             self._thread.start()
@@ -471,9 +475,6 @@ class ArmActionRunner:
                 ret = self.client.ExecuteAction(action_id)
             print(f"arm: executed {self.action_name!r}, ret={ret}")
 
-            if self.release_action_name:
-                if not self._cancel_delayed_release.wait(self.release_delay):
-                    self._execute_release_once()
         except Exception as exc:
             print(f"WARNING: arm action failed: {exc}", file=sys.stderr)
 
@@ -481,7 +482,6 @@ class ArmActionRunner:
         if not self.enabled or self.dry_run or not self.release_action_name:
             return
 
-        self._cancel_delayed_release.set()
         try:
             self._execute_release_once()
         except Exception as exc:
@@ -533,6 +533,8 @@ async def main() -> int:
     print(f"release_threshold: {args.release_threshold}")
     print(f"max_close:         {args.max_close} / 1000")
     print(f"sensor_timeout:    {args.sensor_timeout}s")
+    print(f"open_threshold:    {args.open_position_threshold}")
+    print(f"open_timeout:      {args.open_confirm_timeout}s")
     print(f"greeting_phrase:   {greeting_phrase!r}")
     print(f"dry_run:           {args.dry_run}")
     print(f"enable_arm:        {args.enable_arm}")
@@ -549,7 +551,6 @@ async def main() -> int:
         network_interface=args.arm_network_interface,
         action_name=args.arm_action,
         release_action_name=args.arm_release_action,
-        release_delay=args.arm_release_delay,
     )
     speaker = SpeakerRunner(
         phrase=greeting_phrase,
@@ -589,6 +590,7 @@ async def main() -> int:
                 hold_duration=args.hold_duration,
                 max_close=args.max_close,
                 step=args.step,
+                open_timeout=args.open_confirm_timeout,
             )
         )
         last_open_command = 0.0
@@ -596,8 +598,8 @@ async def main() -> int:
         tick = 0
 
         print("Starting loop. Press Ctrl+C to stop.")
-        print("State legend: open_wait -> closing -> hold -> open_wait")
-        print("Release behavior: confirmed release opens hand, releases arm, and waits for rearm.")
+        print("State legend: open_wait -> closing -> hold -> releasing -> open_wait")
+        print("Release behavior: open hand, confirm measured-open, then release arm.")
         print()
 
         # Start fully open.
@@ -625,7 +627,17 @@ async def main() -> int:
                     f"tactile read exceeded sensor timeout of {args.sensor_timeout:.2f}s"
                 ) from exc
 
-            decision = machine.update(metric, now)
+            positions = None
+            status_period = max(1, int(1.0 / args.period))
+            if machine.state == HandshakeState.RELEASING or tick % status_period == 0:
+                positions = await maybe_get_motor_positions(ctx, args.slave_id, args.sensor_timeout)
+            hand_is_open = (
+                positions is not None
+                and len(positions) > 0
+                and all(0 <= position <= args.open_position_threshold for position in positions)
+            )
+
+            decision = machine.update(metric, time.monotonic(), hand_is_open=hand_is_open)
 
             if decision.state.value == "open_wait" and now - last_open_command >= args.open_repeat:
                 await command_positions(
@@ -649,15 +661,16 @@ async def main() -> int:
                 arm.trigger()
             if decision.entered_hold:
                 speaker.greet()
+            if decision.state == HandshakeState.RELEASING and decision.event:
+                print(f"{decision.event}; opening hand before arm release.")
             if decision.release_arm:
-                print(f"{decision.event}; opening hand and releasing arm.")
+                if decision.event == "hand_open_timeout":
+                    print("WARNING: hand-open confirmation timed out; releasing arm.", file=sys.stderr)
+                else:
+                    print("Hand open confirmed; releasing arm.")
                 arm.release_now()
 
-            positions = None
-            if tick % max(1, int(1.0 / args.period)) == 0:
-                positions = await maybe_get_motor_positions(ctx, args.slave_id, args.sensor_timeout)
-
-            if (not args.quiet) or tick % max(1, int(1.0 / args.period)) == 0:
+            if (not args.quiet) or tick % status_period == 0:
                 pos_str = f" motor={positions}" if positions is not None else ""
                 armed = " armed" if machine.ready_for_contact else " disarmed"
                 print(
@@ -695,6 +708,30 @@ async def main() -> int:
                     timeout=2.0,
                 )
                 print("cleanup: hand open command sent.")
+                if not args.dry_run:
+                    open_deadline = time.monotonic() + args.open_confirm_timeout
+                    cleanup_open_confirmed = False
+                    while time.monotonic() < open_deadline:
+                        remaining = open_deadline - time.monotonic()
+                        cleanup_positions = await maybe_get_motor_positions(
+                            ctx,
+                            args.slave_id,
+                            min(args.sensor_timeout, max(0.02, remaining)),
+                        )
+                        if cleanup_positions and all(
+                            0 <= position <= args.open_position_threshold
+                            for position in cleanup_positions
+                        ):
+                            cleanup_open_confirmed = True
+                            break
+                        await asyncio.sleep(min(0.05, max(0.0, remaining)))
+                    if cleanup_open_confirmed:
+                        print("cleanup: measured-open confirmed.")
+                    else:
+                        print(
+                            "WARNING: cleanup hand-open confirmation timed out; releasing arm.",
+                            file=sys.stderr,
+                        )
             except BaseException as exc:
                 print(f"WARNING: cleanup could not open hand: {exc}", file=sys.stderr)
             try:

@@ -21,8 +21,10 @@ hold:
   Reopen after hold-duration even if contact continues.
 
 release:
-  When touch is released for release-seconds, reopen the hand.
-  If an arm action is enabled, also send the arm release action immediately.
+  When touch is released for release-seconds, enter the releasing state.
+  Command the hand open and wait for measured-open confirmation before sending
+  the arm release action. A bounded timeout prevents waiting forever if motor
+  status is unavailable.
   The next handshake is blocked until touch is clearly released again.
 
 optional arm action:
@@ -360,14 +362,14 @@ Use:
     20
 
 --release-seconds SECONDS
-  Release debounce time. While closing or holding, confirmed release opens
-  the hand, sends the arm release action, and prevents another activation
-  until touch is clearly released again.
+  Release debounce time. While closing or holding, confirmed release starts
+  the hand-first release sequence and prevents another activation until touch
+  is clearly released again.
   Default:
     0.7
 
 --hold-duration SECONDS
-  Maximum time to remain in hold before reopening the hand and releasing the arm.
+  Maximum time to remain in hold before entering the hand-first release sequence.
   Default:
     5.0
 
@@ -400,6 +402,17 @@ Use:
   than this interval. Motor-status timeouts are treated as unavailable status.
   Default:
     1.0
+
+--open-position-threshold VALUE
+  The arm is not released until every measured finger position is at or below
+  this value, unless open-confirm-timeout expires.
+  Default:
+    100
+
+--open-confirm-timeout SECONDS
+  Maximum time to wait for measured-open confirmation before releasing the arm.
+  Default:
+    2.0
 
 --thumb-scale SCALE
   Scale thumb and thumb_aux closing relative to other fingers.
@@ -439,15 +452,13 @@ Use:
     shake hand
 
 --arm-release-action NAME
-  Unitree arm action to run after arm-release-delay, and on Ctrl-C/duration exit.
+  Unitree arm action to run after the hand is measured open, and on safe cleanup.
   Default:
     release arm
 
 --arm-release-delay SECONDS
-  Seconds to wait after arm-action before running arm-release-action.
-  Increase this if the arm raises but releases before the visible shake.
-  Default:
-    4.0
+  Deprecated compatibility option. Independent delayed arm release is disabled
+  because it can lower the arm while the hand is still gripping.
 ```
 
 ## Greeting configuration
@@ -522,7 +533,7 @@ python ~/demos/g1_brainco_handshake_demo.py \
   --release-threshold 10
 ```
 
-When touch reaches `--start-threshold`, the script enters `closing` and triggers Unitree's built-in `shake hand` arm action. After `--arm-release-delay`, it sends `release arm`. Use a longer delay, such as `--arm-release-delay 5`, if the arm raises but does not visibly shake before releasing.
+When touch reaches `--start-threshold`, the script enters `closing` and triggers Unitree's built-in `shake hand` arm action. On release or hold timeout, it enters `releasing`, commands the fingers open, and polls measured finger positions. It sends `release arm` only after all fingers are at or below `--open-position-threshold`, or after `--open-confirm-timeout` if confirmation is unavailable. The old independent `--arm-release-delay` behavior is disabled.
 
 ### Use explicit port and slave ID
 
@@ -678,7 +689,7 @@ Press:
 Ctrl-C
 ```
 
-Normal completion, Ctrl-C cancellation, and handled runtime errors all pass through the same best-effort cleanup path, which commands the hand open before releasing the arm and closing Modbus. A second interrupt, loss of communication, or hardware failure can still prevent cleanup. Always test with a safe hand pose and keep the robot clear of people and objects during development.
+Normal completion, Ctrl-C cancellation, and handled runtime errors all pass through the same best-effort cleanup path. It commands the hand open, waits for measured-open confirmation up to `--open-confirm-timeout`, then releases the arm and closes Modbus. A second interrupt, loss of communication, or hardware failure can still prevent cleanup. Always test with a safe hand pose and keep the robot clear of people and objects during development.
 
 ## Notes on ROS integration
 

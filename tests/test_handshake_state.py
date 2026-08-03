@@ -12,6 +12,7 @@ def config(**overrides):
         "hold_duration": 5.0,
         "max_close": 500,
         "step": 50,
+        "open_timeout": 2.0,
     }
     values.update(overrides)
     return HandshakeConfig(**values)
@@ -38,9 +39,14 @@ class HandshakeStateMachineTests(unittest.TestCase):
 
         machine.update(0.0, 1.3)
         decision = machine.update(0.0, 2.0)
-        self.assertEqual(decision.state, HandshakeState.OPEN_WAIT)
+        self.assertEqual(decision.state, HandshakeState.RELEASING)
         self.assertEqual(decision.command_close, 0)
+        self.assertFalse(decision.release_arm)
+
+        decision = machine.update(0.0, 2.1, hand_is_open=True)
+        self.assertEqual(decision.state, HandshakeState.OPEN_WAIT)
         self.assertTrue(decision.release_arm)
+        self.assertEqual(decision.event, "hand_open_confirmed")
 
     def test_release_during_closing_opens(self):
         machine = HandshakeStateMachine(config())
@@ -50,8 +56,9 @@ class HandshakeStateMachineTests(unittest.TestCase):
         decision = machine.update(0.0, 0.8)
 
         self.assertEqual(decision.event, "release_during_closing")
+        self.assertEqual(decision.state, HandshakeState.RELEASING)
         self.assertEqual(decision.command_close, 0)
-        self.assertTrue(decision.release_arm)
+        self.assertFalse(decision.release_arm)
 
     def test_hold_timeout_opens_even_with_contact(self):
         machine = HandshakeStateMachine(config(hold_duration=2.0))
@@ -61,8 +68,23 @@ class HandshakeStateMachineTests(unittest.TestCase):
         decision = machine.update(300.0, 2.1)
 
         self.assertEqual(decision.event, "hold_timeout")
+        self.assertEqual(decision.state, HandshakeState.RELEASING)
+        self.assertFalse(decision.release_arm)
+
+    def test_releasing_times_out_before_lowering_arm(self):
+        machine = HandshakeStateMachine(config(open_timeout=1.0))
+        machine.update(60.0, 0.0)
+        machine.update(300.0, 0.1)
+        machine.update(300.0, 5.1)
+
+        decision = machine.update(300.0, 6.0, hand_is_open=False)
+        self.assertEqual(decision.state, HandshakeState.RELEASING)
+        self.assertFalse(decision.release_arm)
+
+        decision = machine.update(300.0, 6.1, hand_is_open=False)
         self.assertEqual(decision.state, HandshakeState.OPEN_WAIT)
         self.assertTrue(decision.release_arm)
+        self.assertEqual(decision.event, "hand_open_timeout")
 
     def test_max_close_enters_hold(self):
         machine = HandshakeStateMachine(config(max_close=100, step=50))
@@ -83,14 +105,15 @@ class HandshakeStateMachineTests(unittest.TestCase):
         machine.update(300.0, 0.1)
         machine.update(0.0, 0.2)
         machine.update(0.0, 0.9)
+        machine.update(0.0, 1.0, hand_is_open=True)
 
-        decision = machine.update(60.0, 1.0)
+        decision = machine.update(60.0, 1.1)
         self.assertEqual(decision.state, HandshakeState.OPEN_WAIT)
         self.assertFalse(decision.trigger_arm)
 
-        machine.update(0.0, 1.1)
-        machine.update(0.0, 1.8)
-        decision = machine.update(60.0, 1.9)
+        machine.update(0.0, 1.2)
+        machine.update(0.0, 1.9)
+        decision = machine.update(60.0, 2.0)
         self.assertEqual(decision.state, HandshakeState.CLOSING)
         self.assertTrue(decision.trigger_arm)
 

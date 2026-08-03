@@ -9,6 +9,7 @@ class HandshakeState(str, Enum):
     OPEN_WAIT = "open_wait"
     CLOSING = "closing"
     HOLD = "hold"
+    RELEASING = "releasing"
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class HandshakeConfig:
     hold_duration: float
     max_close: int
     step: int
+    open_timeout: float
 
 
 @dataclass(frozen=True)
@@ -45,12 +47,14 @@ class HandshakeStateMachine:
         self.rearm_started: Optional[float] = None
         self.hold_started: Optional[float] = None
 
-    def update(self, metric: float, now: float) -> HandshakeDecision:
+    def update(self, metric: float, now: float, hand_is_open: bool = False) -> HandshakeDecision:
         if self.state == HandshakeState.OPEN_WAIT:
             return self._update_open_wait(metric, now)
         if self.state == HandshakeState.CLOSING:
             return self._update_closing(metric, now)
-        return self._update_hold(metric, now)
+        if self.state == HandshakeState.HOLD:
+            return self._update_hold(metric, now)
+        return self._update_releasing(now, hand_is_open)
 
     def _update_open_wait(self, metric: float, now: float) -> HandshakeDecision:
         self.close_value = 0
@@ -86,7 +90,7 @@ class HandshakeStateMachine:
             self.close_value = min(self.config.max_close, self.close_value + self.config.step)
 
         if self._release_confirmed(metric, now):
-            return self._open_after_handshake("release_during_closing")
+            return self._begin_release(now, "release_during_closing")
 
         return self._decision(
             command_close=self.close_value,
@@ -96,10 +100,10 @@ class HandshakeStateMachine:
 
     def _update_hold(self, metric: float, now: float) -> HandshakeDecision:
         if self.hold_started is not None and now - self.hold_started >= self.config.hold_duration:
-            return self._open_after_handshake("hold_timeout")
+            return self._begin_release(now, "hold_timeout")
 
         if self._release_confirmed(metric, now):
-            return self._open_after_handshake("release_during_hold")
+            return self._begin_release(now, "release_during_hold")
 
         return self._decision()
 
@@ -112,13 +116,24 @@ class HandshakeStateMachine:
         self.release_started = None
         return False
 
-    def _open_after_handshake(self, event: str) -> HandshakeDecision:
-        self.state = HandshakeState.OPEN_WAIT
+    def _begin_release(self, now: float, event: str) -> HandshakeDecision:
+        self.state = HandshakeState.RELEASING
         self.close_value = 0
         self.hold_started = None
         self.release_started = None
         self.rearm_started = None
-        return self._decision(command_close=0, release_arm=True, event=event)
+        self.release_started = now
+        return self._decision(command_close=0, event=event)
+
+    def _update_releasing(self, now: float, hand_is_open: bool) -> HandshakeDecision:
+        release_elapsed = 0.0 if self.release_started is None else now - self.release_started
+        if hand_is_open or release_elapsed >= self.config.open_timeout:
+            self.state = HandshakeState.OPEN_WAIT
+            self.release_started = None
+            event = "hand_open_confirmed" if hand_is_open else "hand_open_timeout"
+            return self._decision(command_close=0, release_arm=True, event=event)
+
+        return self._decision(command_close=0)
 
     def _decision(
         self,

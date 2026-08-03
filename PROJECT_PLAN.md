@@ -642,3 +642,4 @@ These decisions should be recorded here as they are resolved:
 | 2026-08-04 | 0.3 | Added a configurable, non-blocking speaker greeting on entry to the hold state. |
 | 2026-08-04 | 0.4 | Switched the initial greeting to Mandarin for compatibility with the G1 built-in TTS service. |
 | 2026-08-04 | 0.5 | Documented non-Chinese greeting support through configurable PCM/WAV streaming as the next audio step. |
+| 2026-08-04 | 0.6 | Added a hand-first releasing state with measured-open confirmation before lowering the arm. |
