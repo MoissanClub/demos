@@ -14,8 +14,8 @@ Behavior:
   2. When touch/contact is detected, close slowly.
   3. Stop closing when either:
        - tactile value reaches --stop-threshold, or
-       - commanded close reaches --max-close, default 750 = 3/4 closed.
-  4. Reopen when touch is released for --release-seconds.
+       - commanded close reaches --max-close, default 500 = 1/2 closed.
+  4. Reopen when touch is released for --release-seconds or the hold timeout expires.
 
 Important:
   - Do NOT run this while launch_robot.sh / stark_node is running.
@@ -31,6 +31,8 @@ import sys
 import threading
 import time
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
+
+from handshake_state import HandshakeConfig, HandshakeStateMachine
 
 
 DEFAULT_LEFT_PORT = "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if02-port0"
@@ -168,9 +170,9 @@ def safe_is_array_pressure(hw_type: Any) -> bool:
     return hw_int_value(hw_type) == 14
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Tactile handshake demo: open when no touch, close slowly until touch threshold or 3/4 close."
+        description="Tactile handshake demo: open when idle, close slowly until a touch or close limit."
     )
 
     hand = parser.add_mutually_exclusive_group()
@@ -200,6 +202,8 @@ def parse_args() -> argparse.Namespace:
                         help="Control loop period in seconds. Default: 0.10.")
     parser.add_argument("--open-repeat", type=float, default=1.0,
                         help="Repeat open command every N seconds while idle. Default: 1.0.")
+    parser.add_argument("--sensor-timeout", type=float, default=1.0,
+                        help="Maximum seconds allowed for one tactile read. Default: 1.0.")
 
     parser.add_argument("--thumb-scale", type=float, default=1.0,
                         help="Scale thumb/thumb_aux close target relative to fingers. Default: 1.0.")
@@ -222,9 +226,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--arm-release-delay", type=float, default=4.0,
                         help="Seconds after arm action before release action. Default: 4.0.")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    if not args.left and not args.right and args.port is None and args.slave_id is None:
+    if not args.left and not args.right:
         args.right = True
 
     if args.port is None:
@@ -233,12 +237,26 @@ def parse_args() -> argparse.Namespace:
     if args.slave_id is None:
         args.slave_id = DEFAULT_RIGHT_ID if args.right else DEFAULT_LEFT_ID
 
-    args.max_close = max(0, min(1000, args.max_close))
-    args.step = max(1, min(1000, args.step))
-    args.period = max(0.02, args.period)
-    args.release_seconds = max(0.0, args.release_seconds)
-    args.hold_duration = max(0.0, args.hold_duration)
-    args.arm_release_delay = max(0.0, args.arm_release_delay)
+    if not args.release_threshold < args.start_threshold < args.stop_threshold:
+        parser.error("thresholds must satisfy release-threshold < start-threshold < stop-threshold")
+    if not 0 <= args.max_close <= 1000:
+        parser.error("max-close must be between 0 and 1000")
+    if not 1 <= args.step <= 1000:
+        parser.error("step must be between 1 and 1000")
+    if args.period < 0.02:
+        parser.error("period must be at least 0.02 seconds")
+    if args.release_seconds < 0 or args.hold_duration < 0 or args.arm_release_delay < 0:
+        parser.error("release-seconds, hold-duration, and arm-release-delay must be nonnegative")
+    if args.duration < 0:
+        parser.error("duration must be nonnegative")
+    if args.open_repeat <= 0 or args.sensor_timeout <= 0:
+        parser.error("open-repeat and sensor-timeout must be greater than zero")
+    if not 0.0 <= args.thumb_scale <= 1.0:
+        parser.error("thumb-scale must be between 0.0 and 1.0")
+    if not 0 <= args.slave_id <= 0xFF:
+        parser.error("slave-id must be between 0 and 255")
+    if args.baud <= 0:
+        parser.error("baud must be greater than zero")
 
     return args
 
@@ -337,10 +355,20 @@ def make_positions(close_value: int, thumb_scale: float) -> List[int]:
     return [thumb, thumb, close_value, close_value, close_value, close_value]
 
 
-async def command_positions(ctx: Any, slave_id: int, positions: Sequence[int], dry_run: bool) -> None:
+async def command_positions(
+    ctx: Any,
+    slave_id: int,
+    positions: Sequence[int],
+    dry_run: bool,
+    timeout: Optional[float] = None,
+) -> None:
     if dry_run:
         return
-    await ctx.set_finger_positions(slave_id, [int(x) for x in positions])
+    operation = ctx.set_finger_positions(slave_id, [int(x) for x in positions])
+    if timeout is None:
+        await operation
+    else:
+        await asyncio.wait_for(operation, timeout=timeout)
 
 
 class ArmActionRunner:
@@ -363,9 +391,11 @@ class ArmActionRunner:
         self.release_delay = release_delay
         self.client: Any = None
         self.action_map: Any = None
-        self._lock = threading.Lock()
+        self._thread_lock = threading.Lock()
+        self._client_lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._cancel_delayed_release = threading.Event()
+        self._release_sent = threading.Event()
 
     def init(self) -> None:
         if not self.enabled:
@@ -414,10 +444,11 @@ class ArmActionRunner:
         if not self.enabled:
             return
 
-        with self._lock:
+        with self._thread_lock:
             if self._thread is not None and self._thread.is_alive():
                 return
             self._cancel_delayed_release.clear()
+            self._release_sent.clear()
             self._thread = threading.Thread(target=self._run_sequence, name="arm_action", daemon=True)
             self._thread.start()
 
@@ -430,14 +461,13 @@ class ArmActionRunner:
 
         try:
             action_id = self.action_map[self.action_name]
-            ret = self.client.ExecuteAction(action_id)
+            with self._client_lock:
+                ret = self.client.ExecuteAction(action_id)
             print(f"arm: executed {self.action_name!r}, ret={ret}")
 
             if self.release_action_name:
                 if not self._cancel_delayed_release.wait(self.release_delay):
-                    release_id = self.action_map[self.release_action_name]
-                    ret = self.client.ExecuteAction(release_id)
-                    print(f"arm: executed {self.release_action_name!r}, ret={ret}")
+                    self._execute_release_once()
         except Exception as exc:
             print(f"WARNING: arm action failed: {exc}", file=sys.stderr)
 
@@ -447,16 +477,25 @@ class ArmActionRunner:
 
         self._cancel_delayed_release.set()
         try:
-            release_id = self.action_map[self.release_action_name]
-            ret = self.client.ExecuteAction(release_id)
-            print(f"arm: executed {self.release_action_name!r}, ret={ret}")
+            self._execute_release_once()
         except Exception as exc:
             print(f"WARNING: arm release failed: {exc}", file=sys.stderr)
 
+    def _execute_release_once(self) -> None:
+        with self._client_lock:
+            if self._release_sent.is_set():
+                return
+            release_id = self.action_map[self.release_action_name]
+            ret = self.client.ExecuteAction(release_id)
+            self._release_sent.set()
+        print(f"arm: executed {self.release_action_name!r}, ret={ret}")
 
-async def maybe_get_motor_positions(ctx: Any, slave_id: int) -> Optional[List[int]]:
+
+async def maybe_get_motor_positions(
+    ctx: Any, slave_id: int, timeout: float
+) -> Optional[List[int]]:
     try:
-        status = await ctx.get_motor_status(slave_id)
+        status = await asyncio.wait_for(ctx.get_motor_status(slave_id), timeout=timeout)
         return [int(x) for x in list(status.positions)]
     except Exception:
         return None
@@ -481,6 +520,7 @@ async def main() -> int:
     print(f"stop_threshold:    {args.stop_threshold}")
     print(f"release_threshold: {args.release_threshold}")
     print(f"max_close:         {args.max_close} / 1000")
+    print(f"sensor_timeout:    {args.sensor_timeout}s")
     print(f"dry_run:           {args.dry_run}")
     print(f"enable_arm:        {args.enable_arm}")
     if args.enable_arm:
@@ -520,13 +560,18 @@ async def main() -> int:
         except Exception as exc:
             print(f"WARNING: touch_sensor_setup failed, trying to continue: {exc}")
 
-        state = "open_wait"
-        close_value = 0
+        machine = HandshakeStateMachine(
+            HandshakeConfig(
+                start_threshold=args.start_threshold,
+                stop_threshold=args.stop_threshold,
+                release_threshold=args.release_threshold,
+                release_seconds=args.release_seconds,
+                hold_duration=args.hold_duration,
+                max_close=args.max_close,
+                step=args.step,
+            )
+        )
         last_open_command = 0.0
-        release_started: Optional[float] = None
-        rearm_started: Optional[float] = None
-        hold_started: Optional[float] = None
-        ready_for_contact = True
         started_at = time.monotonic()
         tick = 0
 
@@ -536,99 +581,67 @@ async def main() -> int:
         print()
 
         # Start fully open.
-        await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
+        await command_positions(
+            ctx,
+            args.slave_id,
+            make_positions(0, args.thumb_scale),
+            args.dry_run,
+            args.sensor_timeout,
+        )
 
         while True:
             now = time.monotonic()
             if args.duration > 0 and now - started_at >= args.duration:
-                print("Duration reached; opening hand and exiting.")
-                await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
-                arm.release_now()
+                print("Duration reached; exiting through safe cleanup.")
                 return 0
 
-            metric, detail = await get_touch_metric(ctx, args.slave_id, hw_type)
+            try:
+                metric, detail = await asyncio.wait_for(
+                    get_touch_metric(ctx, args.slave_id, hw_type),
+                    timeout=args.sensor_timeout,
+                )
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError(
+                    f"tactile read exceeded sensor timeout of {args.sensor_timeout:.2f}s"
+                ) from exc
 
-            if state == "open_wait":
-                close_value = 0
-                hold_started = None
+            decision = machine.update(metric, now)
 
-                if now - last_open_command >= args.open_repeat:
-                    await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
-                    last_open_command = now
+            if decision.state.value == "open_wait" and now - last_open_command >= args.open_repeat:
+                await command_positions(
+                    ctx,
+                    args.slave_id,
+                    make_positions(0, args.thumb_scale),
+                    args.dry_run,
+                    args.sensor_timeout,
+                )
+                last_open_command = now
 
-                if not ready_for_contact:
-                    if metric < args.release_threshold:
-                        if rearm_started is None:
-                            rearm_started = now
-                        elif now - rearm_started >= args.release_seconds:
-                            ready_for_contact = True
-                            rearm_started = None
-                    else:
-                        rearm_started = None
-
-                if ready_for_contact and metric >= args.start_threshold:
-                    state = "closing"
-                    close_value = 0
-                    release_started = None
-                    rearm_started = None
-                    ready_for_contact = False
-                    arm.trigger()
-
-            elif state == "closing":
-                if metric >= args.stop_threshold or close_value >= args.max_close:
-                    state = "hold"
-                    hold_started = now
-                    close_value = min(close_value, args.max_close)
-                    await command_positions(ctx, args.slave_id, make_positions(close_value, args.thumb_scale), args.dry_run)
-                else:
-                    close_value = min(args.max_close, close_value + args.step)
-                    await command_positions(ctx, args.slave_id, make_positions(close_value, args.thumb_scale), args.dry_run)
-
-                if metric < args.release_threshold:
-                    if release_started is None:
-                        release_started = now
-                    elif now - release_started >= args.release_seconds:
-                        print("Release confirmed during closing; opening hand and releasing arm.")
-                        state = "open_wait"
-                        hold_started = None
-                        close_value = 0
-                        await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
-                        arm.release_now()
-                        rearm_started = None
-                else:
-                    release_started = None
-
-            elif state == "hold":
-                if hold_started is not None and now - hold_started >= args.hold_duration:
-                    state = "open_wait"
-                    hold_started = None
-                    close_value = 0
-                    release_started = None
-                    await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
-                    arm.release_now()
-                    rearm_started = None
-                elif metric < args.release_threshold:
-                    if release_started is None:
-                        release_started = now
-                    elif now - release_started >= args.release_seconds:
-                        print("Release confirmed during hold; opening hand and releasing arm.")
-                        state = "open_wait"
-                        hold_started = None
-                        close_value = 0
-                        await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
-                        arm.release_now()
-                        rearm_started = None
-                else:
-                    release_started = None
+            if decision.command_close is not None:
+                await command_positions(
+                    ctx,
+                    args.slave_id,
+                    make_positions(decision.command_close, args.thumb_scale),
+                    args.dry_run,
+                    args.sensor_timeout,
+                )
+            if decision.trigger_arm:
+                arm.trigger()
+            if decision.release_arm:
+                print(f"{decision.event}; opening hand and releasing arm.")
+                arm.release_now()
 
             positions = None
             if tick % max(1, int(1.0 / args.period)) == 0:
-                positions = await maybe_get_motor_positions(ctx, args.slave_id)
+                positions = await maybe_get_motor_positions(ctx, args.slave_id, args.sensor_timeout)
 
             if (not args.quiet) or tick % max(1, int(1.0 / args.period)) == 0:
                 pos_str = f" motor={positions}" if positions is not None else ""
-                armed = " armed" if ready_for_contact else " disarmed"
-                print(f"{state:10s}{armed:9s} touch={metric:7.2f} close_cmd={close_value:4d}{pos_str} | {detail}")
+                armed = " armed" if machine.ready_for_contact else " disarmed"
+                print(
+                    f"{decision.state.value:10s}{armed:9s} touch={metric:7.2f} "
+                    f"close_cmd={decision.close_value:4d}{pos_str} | {detail}"
+                )
 
             tick += 1
             await asyncio.sleep(args.period)
@@ -646,17 +659,26 @@ async def main() -> int:
         print("This is usually a bc-stark-sdk / brainco-hand-sdk version mismatch.", file=sys.stderr)
         print("Try updating the SDK examples and wheel, or send this full output.", file=sys.stderr)
         return 14
-    except KeyboardInterrupt:
-        print("\nInterrupted; opening hand before exit.")
-        if ctx is not None:
-            try:
-                await command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run)
-            except Exception:
-                pass
-        arm.release_now()
-        return 130
+    except asyncio.CancelledError:
+        print("\nCancellation received; running safe cleanup.", file=sys.stderr)
+        raise
+    except Exception as exc:
+        print(f"ERROR: unexpected {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 16
     finally:
         if ctx is not None:
+            try:
+                await asyncio.wait_for(
+                    command_positions(ctx, args.slave_id, make_positions(0, args.thumb_scale), args.dry_run),
+                    timeout=2.0,
+                )
+                print("cleanup: hand open command sent.")
+            except BaseException as exc:
+                print(f"WARNING: cleanup could not open hand: {exc}", file=sys.stderr)
+            try:
+                arm.release_now()
+            except BaseException as exc:
+                print(f"WARNING: cleanup could not release arm: {exc}", file=sys.stderr)
             try:
                 sdk.modbus_close(ctx)
             except Exception:

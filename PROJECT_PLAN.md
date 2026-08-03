@@ -552,10 +552,10 @@ Each level must require an explicit configuration flag. Dry-run or hand-only beh
 
 ## 17. Immediate execution order
 
-- [ ] Harden shutdown and error handling.
-- [ ] Serialize Unitree arm action calls.
-- [ ] Validate thresholds and hand addressing.
-- [ ] Extract and test the state machine.
+- [x] Harden shutdown and error handling in software; hardware interruption tests remain.
+- [x] Serialize Unitree arm action calls.
+- [x] Validate thresholds and hand addressing defaults.
+- [x] Extract and test the state machine.
 - [ ] Build the BrainCo and Unitree telemetry probe.
 - [ ] Publish the telemetry field/rate/unit report.
 - [ ] Finalize schema version 1.
@@ -618,3 +618,4 @@ These decisions should be recorded here as they are resolved:
 | Date | Revision | Summary |
 |---|---:|---|
 | 2026-08-04 | 0.1 | Initial phased project plan created from design brainstorming. |
+| 2026-08-04 | 0.2 | Implemented Phase 0 software hardening and tests; physical validation remains open. |

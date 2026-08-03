@@ -17,6 +17,7 @@ hold:
   Stop closing when either:
     1. tactile value reaches the stop threshold, or
     2. commanded close reaches max-close.
+  Reopen after hold-duration even if contact continues.
 
 release:
   When touch is released for release-seconds, reopen the hand.
@@ -33,10 +34,10 @@ Default closing limit:
 ```text
 0    = fully open
 1000 = fully closed
-750  = 3/4 closed
+500  = half closed
 ```
 
-The default `--max-close 750` therefore means the hand will not close beyond 75% of the command range.
+The default `--max-close 500` therefore means the hand will not close beyond 50% of the command range. A value of 750 can be selected explicitly after conservative testing.
 
 ## Files
 
@@ -355,6 +356,11 @@ Use:
   Default:
     0.7
 
+--hold-duration SECONDS
+  Maximum time to remain in hold before reopening the hand and releasing the arm.
+  Default:
+    5.0
+
 --max-close VALUE
   Maximum close command.
   Range:
@@ -374,6 +380,17 @@ Use:
   Default:
     0.10
 
+--open-repeat SECONDS
+  Repeat the open command at this interval while idle.
+  Default:
+    1.0
+
+--sensor-timeout SECONDS
+  Abort through safe cleanup if a tactile read or hand command takes longer
+  than this interval. Motor-status timeouts are treated as unavailable status.
+  Default:
+    1.0
+
 --thumb-scale SCALE
   Scale thumb and thumb_aux closing relative to other fingers.
   Example:
@@ -392,6 +409,10 @@ Use:
 
 --quiet
   Print less frequently.
+
+--ignore-touch-type-check
+  Continue when the SDK hardware type does not advertise tactile support.
+  Use only after independently confirming that tactile reads work.
 
 --enable-arm
   Trigger a Unitree high-level arm action when touch first starts the closing state.
@@ -630,7 +651,7 @@ Press:
 Ctrl-C
 ```
 
-The script attempts to command the hand open before exiting. However, this is best-effort. Always test with a safe hand pose and keep the robot clear of people and objects during development.
+Normal completion, Ctrl-C cancellation, and handled runtime errors all pass through the same best-effort cleanup path, which commands the hand open before releasing the arm and closing Modbus. A second interrupt, loss of communication, or hardware failure can still prevent cleanup. Always test with a safe hand pose and keep the robot clear of people and objects during development.
 
 ## Notes on ROS integration
 
