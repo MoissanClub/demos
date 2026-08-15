@@ -556,7 +556,7 @@ Each level must require an explicit configuration flag. Dry-run or hand-only beh
 - [x] Serialize Unitree arm action calls.
 - [x] Validate thresholds and hand addressing defaults.
 - [x] Extract and test the state machine.
-- [ ] Build the BrainCo and Unitree telemetry probe.
+- [x] Build the BrainCo and Unitree read-only telemetry probe; live rate validation remains.
 - [ ] Publish the telemetry field/rate/unit report.
 - [ ] Finalize schema version 1.
 - [ ] Implement local Parquet episode recording.
@@ -700,3 +700,4 @@ These decisions should be recorded here as they are resolved:
 | 2026-08-04 | 0.5 | Documented non-Chinese greeting support through configurable PCM/WAV streaming as the next audio step. |
 | 2026-08-04 | 0.6 | Added a hand-first releasing state with measured-open confirmation before lowering the arm. |
 | 2026-08-04 | 0.7 | Added a future bounded hold-state arm oscillation plan gated on telemetry and controller-mode validation. |
+| 2026-08-16 | 0.8 | Added the Phase 1 read-only BrainCo and Unitree telemetry discovery probe. |

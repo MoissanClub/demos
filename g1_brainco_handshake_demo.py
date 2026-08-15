@@ -30,10 +30,17 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 from handshake_state import HandshakeConfig, HandshakeState, HandshakeStateMachine
 from handshake_speaker import SpeakerRunner, load_demo_config
+from telemetry_recording import (
+    TrajectoryRecorder,
+    UnitreeStateRecorder,
+    upload_trajectories,
+)
 
 
 DEFAULT_LEFT_PORT = "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if02-port0"
@@ -233,6 +240,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help=f"Unitree arm action to run after the shake. Default: {DEFAULT_ARM_RELEASE_ACTION!r}.")
     parser.add_argument("--arm-release-delay", type=float, default=4.0,
                         help="Deprecated compatibility option; delayed release is disabled for safety.")
+    parser.add_argument("--record-telemetry", action="store_true",
+                        help="Record BrainCo, controller, and Unitree state to JSONL.")
+    parser.add_argument("--telemetry-output", type=Path, default=None,
+                        help="Trajectory directory. Default: telemetry/trajectories/<run-id>.")
+    parser.add_argument("--telemetry-queue-size", type=int, default=4096,
+                        help="Bounded background-writer queue size. Default: 4096.")
+    parser.add_argument("--unitree-state-topic", default="rt/lowstate",
+                        help="Read-only G1 state topic. Default: rt/lowstate.")
+    parser.set_defaults(upload_trajectories=True)
+    parser.add_argument("--upload-trajectories", dest="upload_trajectories", action="store_true",
+                        help="Upload finalized trajectories after safe cleanup (default).")
+    parser.add_argument("--no-upload-trajectories", dest="upload_trajectories", action="store_false",
+                        help="Keep finalized trajectories local and skip post-run upload.")
+    parser.add_argument("--hf-dataset-repo", default="davidwei79/g1-handshake-data",
+                        help="Hugging Face dataset repository for post-run upload.")
 
     args = parser.parse_args(argv)
 
@@ -269,6 +291,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         parser.error("slave-id must be between 0 and 255")
     if args.baud <= 0:
         parser.error("baud must be greater than zero")
+    if args.telemetry_queue_size <= 0:
+        parser.error("telemetry-queue-size must be greater than zero")
+    if args.telemetry_queue_size < 4:
+        parser.error("telemetry-queue-size must be at least 4")
+    if args.record_telemetry and args.upload_trajectories and not args.hf_dataset_repo.strip():
+        parser.error("hf-dataset-repo must be nonempty")
 
     return args
 
@@ -347,17 +375,24 @@ def touch_metric_from_array_pressure(ap_data: Any) -> Tuple[float, str]:
     return best, " ".join(parts)
 
 
-async def get_touch_metric(ctx: Any, slave_id: int, hw_type: Any) -> Tuple[float, str]:
+async def get_touch_sample(ctx: Any, slave_id: int, hw_type: Any) -> Tuple[float, str, Any]:
     """
     Read tactile metric. Try the ArrayPressure API only when hardware type says
     it is array-pressure. Otherwise use the capacitive touch API.
     """
     if safe_is_array_pressure(hw_type):
         data = await ctx.get_array_pressure_touch_data(slave_id)
-        return touch_metric_from_array_pressure(data)
+        metric, detail = touch_metric_from_array_pressure(data)
+        return metric, detail, data
 
     items = await ctx.get_touch_sensor_status(slave_id)
-    return touch_metric_from_status_items(items)
+    metric, detail = touch_metric_from_status_items(items)
+    return metric, detail, items
+
+
+async def get_touch_metric(ctx: Any, slave_id: int, hw_type: Any) -> Tuple[float, str]:
+    metric, detail, _ = await get_touch_sample(ctx, slave_id, hw_type)
+    return metric, detail
 
 
 def make_positions(close_value: int, thumb_scale: float) -> List[int]:
@@ -507,19 +542,43 @@ async def maybe_get_motor_positions(
         return None
 
 
+async def maybe_get_motor_status(ctx: Any, slave_id: int, timeout: float) -> Any:
+    try:
+        return await asyncio.wait_for(ctx.get_motor_status(slave_id), timeout=timeout)
+    except Exception:
+        return None
+
+
 async def main() -> int:
     args = parse_args()
     check_sdk()
+
+    telemetry: Optional[TrajectoryRecorder] = None
+    unitree_state: Optional[UnitreeStateRecorder] = None
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if args.record_telemetry:
+        output_path = args.telemetry_output or Path("telemetry") / "trajectories" / run_id
+        try:
+            telemetry = TrajectoryRecorder(output_path, args.telemetry_queue_size)
+            telemetry.start()
+            print(f"telemetry: trajectories will be written under {output_path}")
+        except Exception as exc:
+            print(f"ERROR: cannot start telemetry recording: {exc}", file=sys.stderr)
+            return 2
 
     try:
         greeting_phrase, speaker_id = load_demo_config(args.config)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        if telemetry is not None:
+            telemetry.close()
         return 2
 
     if not os.path.exists(args.port):
         print(f"ERROR: port does not exist: {args.port}", file=sys.stderr)
         print("Run: ls -l /dev/serial/by-id/", file=sys.stderr)
+        if telemetry is not None:
+            telemetry.close()
         return 2
 
     baud_enum = int_to_baudrate(args.baud)
@@ -561,6 +620,18 @@ async def main() -> int:
     try:
         arm.init()
         speaker.init(channel_initialized=args.enable_arm and not args.dry_run)
+        if telemetry is not None:
+            unitree_state = UnitreeStateRecorder(
+                telemetry,
+                network_interface=args.arm_network_interface,
+                topic=args.unitree_state_topic,
+            )
+            try:
+                # Outside dry-run, the speaker or arm setup has already initialized DDS.
+                unitree_state.start(channel_initialized=not args.dry_run)
+                print(f"telemetry: subscribed to Unitree {args.unitree_state_topic!r}")
+            except Exception as exc:
+                print(f"WARNING: Unitree state recording unavailable: {exc}", file=sys.stderr)
         ctx = await sdk.modbus_open(args.port, baud_enum)
 
         info = await ctx.get_device_info(args.slave_id)
@@ -610,7 +681,6 @@ async def main() -> int:
             args.dry_run,
             args.sensor_timeout,
         )
-
         while True:
             now = time.monotonic()
             if args.duration > 0 and now - started_at >= args.duration:
@@ -618,26 +688,90 @@ async def main() -> int:
                 return 0
 
             try:
-                metric, detail = await asyncio.wait_for(
-                    get_touch_metric(ctx, args.slave_id, hw_type),
+                metric, detail, touch_data = await asyncio.wait_for(
+                    get_touch_sample(ctx, args.slave_id, hw_type),
                     timeout=args.sensor_timeout,
                 )
+                touch_received_ns = time.monotonic_ns()
             except asyncio.TimeoutError as exc:
                 raise RuntimeError(
                     f"tactile read exceeded sensor timeout of {args.sensor_timeout:.2f}s"
                 ) from exc
 
             positions = None
+            motor_status = None
             status_period = max(1, int(1.0 / args.period))
-            if machine.state == HandshakeState.RELEASING or tick % status_period == 0:
-                positions = await maybe_get_motor_positions(ctx, args.slave_id, args.sensor_timeout)
+            if telemetry is not None or machine.state == HandshakeState.RELEASING or tick % status_period == 0:
+                motor_status = await maybe_get_motor_status(ctx, args.slave_id, args.sensor_timeout)
+                if motor_status is not None:
+                    motor_received_ns = time.monotonic_ns()
+                    positions = [int(x) for x in list(motor_status.positions)]
             hand_is_open = (
                 positions is not None
                 and len(positions) > 0
                 and all(0 <= position <= args.open_position_threshold for position in positions)
             )
 
+            state_before = machine.state
             decision = machine.update(metric, time.monotonic(), hand_is_open=hand_is_open)
+            starts_trajectory = (
+                telemetry is not None
+                and state_before == HandshakeState.OPEN_WAIT
+                and decision.state != HandshakeState.OPEN_WAIT
+            )
+            if starts_trajectory:
+                trajectory_path = telemetry.start_trajectory(
+                    {
+                        "run_id": run_id,
+                        "hand_side": "right" if args.right else "left",
+                        "brainco_device": info,
+                        "port": args.port,
+                        "slave_id": args.slave_id,
+                        "dry_run": args.dry_run,
+                        "enable_arm": args.enable_arm,
+                        "control_parameters": {
+                            "start_threshold": args.start_threshold,
+                            "stop_threshold": args.stop_threshold,
+                            "release_threshold": args.release_threshold,
+                            "release_seconds": args.release_seconds,
+                            "hold_duration": args.hold_duration,
+                            "max_close": args.max_close,
+                            "step": args.step,
+                            "period": args.period,
+                            "thumb_scale": args.thumb_scale,
+                        },
+                    },
+                    timestamp_ns=touch_received_ns,
+                )
+                print(f"telemetry: started trajectory {trajectory_path.name}")
+            if telemetry is not None and telemetry.active:
+                telemetry.record(
+                    "brainco.touch",
+                    touch_data,
+                    timestamp_ns=touch_received_ns,
+                    touch_metric=metric,
+                    controller_state_before=state_before.value,
+                )
+                if motor_status is not None:
+                    telemetry.record(
+                        "brainco.motor",
+                        motor_status,
+                        timestamp_ns=motor_received_ns,
+                    )
+                telemetry.record(
+                    "controller.decision",
+                    {
+                        "state": decision.state.value,
+                        "close_value": decision.close_value,
+                        "command_close": decision.command_close,
+                        "trigger_arm": decision.trigger_arm,
+                        "release_arm": decision.release_arm,
+                        "entered_hold": decision.entered_hold,
+                        "event": decision.event,
+                        "touch_metric": metric,
+                        "hand_is_open": hand_is_open,
+                    },
+                )
 
             if decision.state.value == "open_wait" and now - last_open_command >= args.open_repeat:
                 await command_positions(
@@ -647,6 +781,11 @@ async def main() -> int:
                     args.dry_run,
                     args.sensor_timeout,
                 )
+                if telemetry is not None and telemetry.active:
+                    telemetry.record(
+                        "controller.command",
+                        {"kind": "finger_positions", "positions": make_positions(0, args.thumb_scale), "reason": "idle_open"},
+                    )
                 last_open_command = now
 
             if decision.command_close is not None:
@@ -657,7 +796,18 @@ async def main() -> int:
                     args.dry_run,
                     args.sensor_timeout,
                 )
+                if telemetry is not None and telemetry.active:
+                    telemetry.record(
+                        "controller.command",
+                        {
+                            "kind": "finger_positions",
+                            "positions": make_positions(decision.command_close, args.thumb_scale),
+                            "reason": decision.event or "state_machine",
+                        },
+                    )
             if decision.trigger_arm:
+                if telemetry is not None and telemetry.active:
+                    telemetry.record("controller.event", {"event": "arm_action_requested", "action": args.arm_action})
                 arm.trigger()
             if decision.entered_hold:
                 speaker.greet()
@@ -669,6 +819,11 @@ async def main() -> int:
                 else:
                     print("Hand open confirmed; releasing arm.")
                 arm.release_now()
+                if telemetry is not None and telemetry.active:
+                    telemetry.record(
+                        "controller.event",
+                        {"event": "arm_release_requested", "action": args.arm_release_action},
+                    )
 
             if (not args.quiet) or tick % status_period == 0:
                 pos_str = f" motor={positions}" if positions is not None else ""
@@ -679,6 +834,17 @@ async def main() -> int:
                 )
 
             tick += 1
+            if (
+                telemetry is not None
+                and telemetry.active
+                and state_before == HandshakeState.RELEASING
+                and decision.state == HandshakeState.OPEN_WAIT
+            ):
+                finished_path = telemetry.finish_trajectory(
+                    "success",
+                    decision.event or "returned_to_open_wait",
+                )
+                print(f"telemetry: finalized trajectory {finished_path.name}")
             await asyncio.sleep(args.period)
 
     except PermissionError:
@@ -742,6 +908,32 @@ async def main() -> int:
                 sdk.modbus_close(ctx)
             except Exception:
                 pass
+        # Finalize recording only after hand/arm cleanup and Modbus closure.
+        if telemetry is not None:
+            telemetry.close()
+            if telemetry.write_error:
+                print(f"WARNING: telemetry writer failed: {telemetry.write_error}", file=sys.stderr)
+            else:
+                print(
+                    f"telemetry: finalized {len(telemetry.finalized_paths)} trajectories "
+                    f"(dropped={telemetry.dropped_samples})"
+                )
+            if args.upload_trajectories:
+                try:
+                    uploaded = upload_trajectories(
+                        telemetry.finalized_paths,
+                        repo_id=args.hf_dataset_repo,
+                        run_id=run_id,
+                    )
+                    print(
+                        f"huggingface: uploaded {len(uploaded)} trajectories "
+                        f"to {args.hf_dataset_repo}"
+                    )
+                except Exception as exc:
+                    print(
+                        f"WARNING: trajectory upload failed; local files retained: {exc}",
+                        file=sys.stderr,
+                    )
 
     return 0
 

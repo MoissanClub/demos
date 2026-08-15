@@ -51,10 +51,70 @@ Recommended location on PC2:
 ~/demos/handshake_state.py
 ~/demos/handshake_speaker.py
 ~/demos/handshake_config.json
+~/demos/telemetry_probe.py
 ~/bin/g1_fix_serial_permissions.sh
 ```
 
 The permission helper script is optional but recommended because the BrainCo FTDI serial ports may not be writable by your user after reboot.
+
+## Read-only telemetry discovery
+
+`telemetry_probe.py` records timestamped raw BrainCo tactile/motor samples and
+Unitree G1 `LowState` messages as JSON Lines. It never sends hand positions, arm
+actions, or low-level robot commands. Enabling BrainCo touch sensors is a device
+write, so that setup is disabled unless `--enable-touch-sensors` is specified.
+
+Probe the right hand for 30 seconds:
+
+```bash
+python ~/demos/telemetry_probe.py --brainco --right --duration 30
+```
+
+Probe Unitree state without controlling the robot:
+
+```bash
+python ~/demos/telemetry_probe.py --unitree --network-interface eth0 --duration 30
+```
+
+Both sources can be selected together. Output is written under `telemetry/` and
+ends with a summary containing observed sample rates, read latencies, and errors.
+
+### Record telemetry during a handshake
+
+The handshake controller can record its existing BrainCo reads together with
+read-only Unitree G1 joint and IMU state. BrainCo motor status is sampled once
+per control-loop iteration while recording. JSONL file writes run in a bounded
+background queue and cannot block the safety/control loop.
+
+```bash
+python ~/demos/g1_brainco_handshake_demo.py \
+  --right \
+  --enable-arm \
+  --record-telemetry \
+  --telemetry-output ~/demos/telemetry/trajectories/test_run \
+  --arm-network-interface eth0
+```
+
+Recorded streams include `brainco.touch`, `brainco.motor`,
+`unitree.lowstate`, `controller.decision`, `controller.command`, and
+`controller.event`. Idle `open_wait` data is never written. Each transition out
+of `open_wait` creates a new trajectory JSONL file. That file continues through
+`closing`, `hold`, and `releasing`, includes the final transition back to
+`open_wait`, and is then atomically finalized. Exiting during an active
+handshake finalizes that trajectory as `aborted`; exiting while idle may produce
+zero trajectories.
+
+Every finalized trajectory is uploaded after safe robot cleanup and local file
+closure to the configured private dataset repository. The default is equivalent
+to:
+
+```bash
+--upload-trajectories --hf-dataset-repo davidwei79/g1-handshake-data
+```
+
+The dataset repository is created as private if necessary. An upload failure
+never removes the local trajectory files. Use `--no-upload-trajectories` for a
+local-only run.
 
 ## Hardware and port mapping
 
