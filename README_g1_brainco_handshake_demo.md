@@ -116,6 +116,19 @@ The dataset repository is created as private if necessary. An upload failure
 never removes the local trajectory files. Use `--no-upload-trajectories` for a
 local-only run.
 
+For the standard right-hand arm demo with trajectory recording and post-run
+upload, use the launcher:
+
+```bash
+./demo.sh
+```
+
+Additional controller options are forwarded to Python, for example:
+
+```bash
+./demo.sh --duration 30 --max-close 400
+```
+
 ## Hardware and port mapping
 
 On this G1 setup, the BrainCo module is connected through one USB-C cable, but Linux sees one FTDI FT4232H device exposing four serial interfaces:
