@@ -226,7 +226,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="Read tactile values and print decisions, but do not move the hand.")
     parser.add_argument("--duration", type=float, default=0.0,
                         help="Optional max runtime in seconds. 0 means run until Ctrl+C.")
-    parser.add_argument("--quiet", action="store_true", help="Print less often.")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Deprecated compatibility flag; status prints only on state changes.")
     parser.add_argument("--ignore-touch-type-check", action="store_true",
                         help="Proceed even if hardware type does not report touch support.")
 
@@ -667,6 +668,7 @@ async def main() -> int:
         last_open_command = 0.0
         started_at = time.monotonic()
         tick = 0
+        last_displayed_state: Optional[HandshakeState] = None
 
         print("Starting loop. Press Ctrl+C to stop.")
         print("State legend: open_wait -> closing -> hold -> releasing -> open_wait")
@@ -825,13 +827,15 @@ async def main() -> int:
                         {"event": "arm_release_requested", "action": args.arm_release_action},
                     )
 
-            if (not args.quiet) or tick % status_period == 0:
+            state_changed = decision.state != last_displayed_state
+            if state_changed:
                 pos_str = f" motor={positions}" if positions is not None else ""
                 armed = " armed" if machine.ready_for_contact else " disarmed"
                 print(
                     f"{decision.state.value:10s}{armed:9s} touch={metric:7.2f} "
                     f"close_cmd={decision.close_value:4d}{pos_str} | {detail}"
                 )
+                last_displayed_state = decision.state
 
             tick += 1
             if (

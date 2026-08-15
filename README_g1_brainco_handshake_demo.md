@@ -262,6 +262,10 @@ closing   disarmed touch=  35.00 close_cmd=  20 | thumb=5 index=35 middle=0 ring
 hold      disarmed touch= 110.00 close_cmd= 220 | thumb=20 index=110 middle=70 ring=0 pinky=0
 ```
 
+Status lines, including per-finger details such as `thumb=...`, are printed only
+when the controller state changes. Sensor polling and telemetry recording still
+continue at the configured control-loop rate.
+
 ## First motion test: conservative
 
 After dry-run looks reasonable, start with a lower close limit:
