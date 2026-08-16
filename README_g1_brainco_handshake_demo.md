@@ -2,6 +2,10 @@
 
 This README documents `g1_brainco_handshake_demo.py`, a standalone BrainCo SDK demo for the Unitree G1 PC2. The script reads the tactile sensor on one BrainCo hand and commands that same hand to perform a simple handshake behavior.
 
+For the trajectory schema, units, timing/alignment rules, joint mapping,
+analysis tables, and visualization guidance, see
+[`HANDSHAKE_DATASET.md`](HANDSHAKE_DATASET.md).
+
 ## Behavior
 
 The demo runs a small state machine:
