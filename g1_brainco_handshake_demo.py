@@ -835,6 +835,8 @@ async def main() -> int:
                     f"{decision.state.value:10s}{armed:9s} touch={metric:7.2f} "
                     f"close_cmd={decision.close_value:4d}{pos_str} | {detail}"
                 )
+                if decision.state == HandshakeState.OPEN_WAIT:
+                    print("press Q to exit the handshake program")
                 last_displayed_state = decision.state
 
             tick += 1

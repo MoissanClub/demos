@@ -277,7 +277,9 @@ hold      disarmed touch= 110.00 close_cmd= 220 | thumb=20 index=110 middle=70 r
 
 Status lines, including per-finger details such as `thumb=...`, are printed only
 when the controller state changes. Sensor polling and telemetry recording still
-continue at the configured control-loop rate.
+continue at the configured control-loop rate. On initial entry into `open_wait`
+and each return to it, the console prints `press Q to exit the handshake
+program`.
 
 ## First motion test: conservative
 
