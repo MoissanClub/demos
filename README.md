@@ -19,6 +19,14 @@ Humans learn these behaviors naturally. A three-year-old can gradually learn to 
 
 This project uses the humble handshake as a testbed for that question.
 
+## See It in Action
+
+🎥 **Demo:** [Watch the robot handshake demo on YouTube](https://www.youtube.com/shorts/UKuVE7b0esA)
+
+📊 **Dataset:** [G1 Handshake Dataset on Hugging Face](https://huggingface.co/datasets/davidwei79/g1-handshake-data)
+
+The dataset contains synchronized recordings of real human–robot handshake interactions, including tactile sensing, dexterous-hand state, robot state, and controller decisions.
+
 ## Project Goal
 
 Our goal is to build a robot capable of a **"perfect handshake"** using a dexterous hand, tactile sensing, vision, and voice.
@@ -90,7 +98,7 @@ Consider just a few dimensions:
 | Grip | pressure, speed, finger configuration |
 | Contact | timing and contact location |
 | Arm motion | amplitude, frequency, compliance |
-| Timing | when to approach, grip, shake and release |
+| Timing | when to approach, grip, shake, and release |
 | Vision | gestures, hand pose, hesitation, reaction |
 | Voice | what to say and when |
 | Adaptation | different people prefer different interactions |
@@ -151,7 +159,23 @@ The current prototype uses a humanoid robot with:
 
 The project is progressively adding richer perception, interaction data collection, evaluation, vision, voice, and learning.
 
-Current demo code in this repository provides the starting point for collecting and studying real human–robot handshake interactions.
+### Current Data Pipeline
+
+Each handshake can be recorded as a synchronized multimodal trajectory containing streams such as:
+
+```text
+Human ↔ Robot interaction
+        │
+        ├── brainco.touch       tactile/contact measurements
+        ├── brainco.motor       dexterous-hand motor state
+        ├── unitree.lowstate    robot joints + IMU/body state
+        ├── controller.decision handshake controller decisions
+        └── controller.event    interaction events
+```
+
+These trajectories provide the raw experience from which we can study and eventually learn better handshake behavior.
+
+👉 **[Explore the dataset on Hugging Face](https://huggingface.co/datasets/davidwei79/g1-handshake-data)**
 
 ## Roadmap
 
@@ -193,4 +217,4 @@ If we eventually want robots in homes, hospitals, elder-care facilities, schools
 
 ---
 
-This is an experimental research project from [Moissan Club](https://github.com/MoissanClub).
+An experimental research project from [Moissan Club](https://github.com/MoissanClub).
