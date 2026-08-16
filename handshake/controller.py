@@ -271,6 +271,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="Minimum changed-region fraction for presence. Default: 0.005.")
     parser.add_argument("--vision-roi-scale", type=float, default=0.9,
                         help="Centered image fraction inspected for a hand. Default: 0.9.")
+    parser.add_argument("--vision-min-distance", type=float, default=0.2,
+                        help="Nearest RealSense interaction distance in meters. Default: 0.2.")
+    parser.add_argument("--vision-max-distance", type=float, default=0.6,
+                        help="Farthest RealSense interaction distance in meters. Default: 0.6.")
     parser.add_argument("--record-telemetry", action="store_true",
                         help="Record BrainCo, controller, and Unitree state to JSONL.")
     parser.add_argument("--telemetry-output", type=Path, default=None,
@@ -336,6 +340,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         parser.error("vision-min-area must be between 0.001 and 1.0")
     if not 0.1 <= args.vision_roi_scale <= 1.0:
         parser.error("vision-roi-scale must be between 0.1 and 1.0")
+    if not 0 < args.vision_min_distance < args.vision_max_distance:
+        parser.error("vision distances must satisfy 0 < min-distance < max-distance")
     if args.record_telemetry and args.upload_trajectories and not args.hf_dataset_repo.strip():
         parser.error("hf-dataset-repo must be nonempty")
 
@@ -700,13 +706,16 @@ async def main() -> int:
                 network_interface=args.arm_network_interface,
                 initialize_channel=args.vision_camera == "unitree" and not dds_initialized,
                 realsense_serial=args.vision_realsense_serial,
+                min_distance_m=args.vision_min_distance,
+                max_distance_m=args.vision_max_distance,
             )
             vision.start()
             if args.vision_camera == "unitree":
                 dds_initialized = True
             print(
                 "vision: enabled; states=no_hand -> hand_present, "
-                f"camera={args.vision_camera!r}"
+                f"camera={args.vision_camera!r}, "
+                f"distance={args.vision_min_distance:.2f}-{args.vision_max_distance:.2f}m"
             )
         speaker.init(channel_initialized=args.enable_arm and not args.dry_run)
         if telemetry is not None:

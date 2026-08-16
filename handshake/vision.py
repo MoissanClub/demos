@@ -57,15 +57,18 @@ def parse_camera_source(value: str) -> Union[int, str]:
 class HandPresenceDetector:
     """Background detector exposing only presence and an area score.
 
-    This simple first version finds sufficiently large skin-colored regions in
-    a central region of interest. It does not estimate landmarks or coordinates.
+    This simple first version finds sufficiently large scene changes in a
+    central region of interest. RealSense changes are depth-gated to the near
+    interaction zone. It does not estimate landmarks or coordinates.
     """
 
     def __init__(self, source: Union[int, str], config: VisionConfig,
                  min_area_ratio: float = 0.005, roi_scale: float = 0.9,
                  fps: float = 10.0, network_interface: Optional[str] = None,
                  initialize_channel: bool = False,
-                 realsense_serial: Optional[str] = None) -> None:
+                 realsense_serial: Optional[str] = None,
+                 min_distance_m: float = 0.2,
+                 max_distance_m: float = 0.6) -> None:
         self.source = source
         self.machine = VisionStateMachine(config)
         self.min_area_ratio = min_area_ratio
@@ -74,6 +77,8 @@ class HandPresenceDetector:
         self.network_interface = network_interface
         self.initialize_channel = initialize_channel
         self.realsense_serial = realsense_serial
+        self.min_distance_m = min_distance_m
+        self.max_distance_m = max_distance_m
         self._lock = threading.Lock()
         self._state = VisionState.NO_HAND
         self._score = 0.0
@@ -84,6 +89,8 @@ class HandPresenceDetector:
         self._capture: Any = None
         self._unitree_client: Any = None
         self._realsense_pipeline: Any = None
+        self._realsense_align: Any = None
+        self._realsense_depth_scale = 0.001
         self._background_gray: Any = None
         self._background_frames = 0
         self._warmup_frames = 0
@@ -113,8 +120,13 @@ class HandPresenceDetector:
                 if self.realsense_serial:
                     config.enable_device(self.realsense_serial)
                 config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-                pipeline.start(config)
+                config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+                profile = pipeline.start(config)
                 self._realsense_pipeline = pipeline
+                self._realsense_align = rs.align(rs.stream.color)
+                self._realsense_depth_scale = (
+                    profile.get_device().first_depth_sensor().get_depth_scale()
+                )
             elif self.source == "unitree":
                 if self.initialize_channel:
                     from unitree_sdk2py.core.channel import ChannelFactoryInitialize
@@ -134,12 +146,20 @@ class HandPresenceDetector:
             period = 1.0 / self.fps
             while not self._stop.is_set():
                 started = time.monotonic()
+                depth_m = None
                 if self._realsense_pipeline is not None:
                     import numpy as np
                     frames = self._realsense_pipeline.wait_for_frames(3000)
+                    frames = self._realsense_align.process(frames)
                     color_frame = frames.get_color_frame()
+                    depth_frame = frames.get_depth_frame()
                     frame = np.asanyarray(color_frame.get_data()) if color_frame else None
-                    ok = frame is not None
+                    depth_m = (
+                        np.asanyarray(depth_frame.get_data()).astype("float32")
+                        * self._realsense_depth_scale
+                        if depth_frame else None
+                    )
+                    ok = frame is not None and depth_m is not None
                 elif self._unitree_client is not None:
                     import numpy as np
                     code, data = self._unitree_client.GetImageSample()
@@ -151,7 +171,7 @@ class HandPresenceDetector:
                     ok, frame = self._capture.read()
                 if not ok or frame is None:
                     raise RuntimeError(f"camera source {self.source!r} stopped producing frames")
-                detected, score = self._detect(frame, cv2)
+                detected, score = self._detect(frame, cv2, depth_m=depth_m)
                 self.machine.update(detected, time.monotonic())
                 with self._lock:
                     self._state = self.machine.state
@@ -171,12 +191,13 @@ class HandPresenceDetector:
             if self._realsense_pipeline is not None:
                 self._realsense_pipeline.stop()
                 self._realsense_pipeline = None
+                self._realsense_align = None
             if self._unitree_client is not None:
                 from .unitree_cleanup import close_rpc_client
                 close_rpc_client(self._unitree_client)
                 self._unitree_client = None
 
-    def _detect(self, frame: Any, cv2: Any) -> Tuple[bool, float]:
+    def _detect(self, frame: Any, cv2: Any, depth_m: Any = None) -> Tuple[bool, float]:
         height, width = frame.shape[:2]
         roi_width = max(1, int(width * self.roi_scale))
         roi_height = max(1, int(height * self.roi_scale))
@@ -205,6 +226,13 @@ class HandPresenceDetector:
             motion_mask = cv2.threshold(difference, 28, 255, cv2.THRESH_BINARY)[1]
             motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_OPEN, kernel)
             motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_CLOSE, kernel)
+            if depth_m is not None:
+                depth_roi = depth_m[top:top + roi_height, left:left + roi_width]
+                near_mask = (
+                    (depth_roi >= self.min_distance_m)
+                    & (depth_roi <= self.max_distance_m)
+                ).astype("uint8") * 255
+                motion_mask = cv2.bitwise_and(motion_mask, near_mask)
         motion_largest = 0.0
         if motion_mask is not None:
             motion_contours, _ = cv2.findContours(

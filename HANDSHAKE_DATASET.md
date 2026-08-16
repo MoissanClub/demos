@@ -169,7 +169,7 @@ This is the easiest stream for state overlays and segmentation.
 | `touch_metric` | number | Derived contact metric. |
 | `hand_is_open` | boolean | All measured positions satisfy open threshold. |
 | `vision_state` | string/null | `no_hand` or `hand_present`. |
-| `vision_score` | number/null | Largest changed-region fraction in the image ROI, `0..1`; not probability. |
+| `vision_score` | number/null | Largest depth-gated changed-region fraction in the image ROI, `0..1`; not probability. |
 
 Events:
 
@@ -321,7 +321,7 @@ Use a shared relative-time axis with:
 2. Commanded hand position and six measured positions.
 3. Right-arm joint positions (indices 22-28).
 4. Right-arm velocities and estimated torques.
-5. Vision score/state, labeled as scene-change detection rather than confidence.
+5. Vision score/state, labeled as depth-gated scene change rather than confidence.
 
 Shade controller states and mark non-null decision events. Above the plots,
 show result, duration, device serial/firmware, thresholds, stream counts,
@@ -345,7 +345,7 @@ effective rates, maximum gaps, and dropped samples.
 
 - No explicit schema-version field exists yet.
 - Images are not recorded; only vision state/score appears during trajectories.
-- Vision score is scene change, not semantic hand confidence.
+- Vision score is depth-gated scene change, not semantic hand confidence.
 - Idle invitation and delayed lowering events can be outside file boundaries.
 - Human identity, comfort/success ratings, and annotations are not collected.
 - Raw SDK fields may change with SDK/firmware; group using device metadata.

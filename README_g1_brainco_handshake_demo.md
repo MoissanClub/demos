@@ -97,7 +97,9 @@ vision has reported `no_hand` once, preventing an immediate re-raise.
 
 This first detector remembers the first eight frames as an empty-scene
 reference and detects a hand-sized object entering the center 90% of that
-scene. It detects presence only: it does not produce coordinates, landmarks,
+scene. On RealSense, only changes between 0.2 and 0.6 meters from the camera
+count; distant people and foot motion are ignored. It detects presence only:
+it does not produce coordinates, landmarks,
 identity, or gesture classification. The RealSense auto-exposure warmup and
 empty-scene calibration take roughly four seconds; keep hands out of view until
 the initial `vision: no_hand` message so the reference is clean.
@@ -119,6 +121,8 @@ Useful tuning options are:
 --vision-absent-seconds 0.75
 --vision-min-area 0.005
 --vision-roi-scale 0.9
+--vision-min-distance 0.2
+--vision-max-distance 0.6
 --arm-post-handshake-lower-delay 1.0
 ```
 

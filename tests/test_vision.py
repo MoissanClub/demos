@@ -44,6 +44,29 @@ class VisionStateMachineTests(unittest.TestCase):
         self.assertTrue(detected)
         self.assertGreater(score, 0.005)
 
+    def test_realsense_depth_excludes_distant_motion(self):
+        import cv2
+        import numpy as np
+
+        detector = HandPresenceDetector(
+            0, VisionConfig(), min_area_ratio=0.005, max_distance_m=0.6
+        )
+        empty = np.full((240, 320, 3), 70, dtype=np.uint8)
+        detector._warmup_frames = 30
+        for _ in range(8):
+            detector._detect(empty, cv2)
+        entered = empty.copy()
+        cv2.rectangle(entered, (120, 70), (200, 190), (255, 0, 0), thickness=-1)
+        distant_depth = np.full((240, 320), 1.5, dtype=np.float32)
+
+        distant, _ = detector._detect(entered, cv2, depth_m=distant_depth)
+        near_depth = distant_depth.copy()
+        near_depth[70:191, 120:201] = 0.25
+        near, _ = detector._detect(entered, cv2, depth_m=near_depth)
+
+        self.assertFalse(distant)
+        self.assertTrue(near)
+
 
 class ArmPolicyTests(unittest.TestCase):
     def test_vision_raises_and_absence_lowers_while_idle(self):
