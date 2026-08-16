@@ -48,14 +48,29 @@ Recommended location on PC2:
 
 ```text
 ~/demos/g1_brainco_handshake_demo.py
-~/demos/handshake_state.py
-~/demos/handshake_speaker.py
+~/demos/handshake/
 ~/demos/handshake_config.json
 ~/demos/telemetry_probe.py
 ~/bin/g1_fix_serial_permissions.sh
 ```
 
 The permission helper script is optional but recommended because the BrainCo FTDI serial ports may not be writable by your user after reboot.
+
+The top-level Python file is a compatibility launcher. Runtime code is organized
+under `handshake/`:
+
+```text
+handshake/
+  controller.py       hardware orchestration and safe cleanup
+  state.py            hardware-independent handshake state machine
+  speaker.py          non-blocking Unitree greeting
+  keyboard.py         q/Q and Ctrl-C terminal handling
+  recording.py        trajectory lifecycle and Hugging Face upload
+  unitree_cleanup.py  explicit SDK DDS teardown
+```
+
+Future vision detection and arm-policy coordination can be added as independent
+package modules without expanding the tactile handshake state machine.
 
 ## Read-only telemetry discovery
 
@@ -193,7 +208,8 @@ Copy the script to the G1 PC2:
 ```bash
 mkdir -p ~/demos
 cp g1_brainco_handshake_demo.py ~/demos/
-cp handshake_state.py handshake_speaker.py handshake_config.json ~/demos/
+cp -r handshake ~/demos/
+cp handshake_config.json telemetry_probe.py ~/demos/
 chmod +x ~/demos/g1_brainco_handshake_demo.py
 ```
 

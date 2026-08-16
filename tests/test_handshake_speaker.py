@@ -3,7 +3,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import mock_open, patch
 
-from handshake_speaker import SpeakerRunner, load_demo_config
+from handshake.speaker import SpeakerRunner, load_demo_config
 
 
 class GreetingConfigTests(unittest.TestCase):

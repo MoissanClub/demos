@@ -1,4 +1,4 @@
-"""Hardware-independent state machine for the tactile handshake demo."""
+"""Hardware-independent state machine for the tactile handshake controller."""
 
 from dataclasses import dataclass
 from enum import Enum

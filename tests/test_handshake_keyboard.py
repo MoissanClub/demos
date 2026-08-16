@@ -3,7 +3,7 @@ import os
 import pty
 import termios
 
-from handshake_keyboard import KeyboardExitMonitor, is_exit_key
+from handshake.keyboard import KeyboardExitMonitor, is_exit_key
 
 
 class NoFileDescriptor:

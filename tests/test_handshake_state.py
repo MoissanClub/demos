@@ -1,6 +1,6 @@
 import unittest
 
-from handshake_state import HandshakeConfig, HandshakeState, HandshakeStateMachine
+from handshake.state import HandshakeConfig, HandshakeState, HandshakeStateMachine
 
 
 def config(**overrides):

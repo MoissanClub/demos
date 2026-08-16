@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from telemetry_recording import TelemetryRecorder, TrajectoryRecorder, upload_trajectories
+from handshake.recording import TelemetryRecorder, TrajectoryRecorder, upload_trajectories
 
 
 class TelemetryRecorderTests(unittest.TestCase):

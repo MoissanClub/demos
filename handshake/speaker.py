@@ -5,7 +5,7 @@ import sys
 import threading
 from typing import Any, Optional, Tuple
 
-from unitree_cleanup import close_rpc_client
+from .unitree_cleanup import close_rpc_client
 
 
 def load_demo_config(path: str) -> Tuple[str, int]:

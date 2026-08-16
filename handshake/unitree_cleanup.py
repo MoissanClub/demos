@@ -1,4 +1,4 @@
-"""Compatibility cleanup for Unitree SDK2 Python RPC clients."""
+"""Compatibility teardown for Unitree SDK2 Python RPC clients."""
 
 from typing import Any
 

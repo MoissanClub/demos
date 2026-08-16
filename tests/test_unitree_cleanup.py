@@ -1,6 +1,6 @@
 import unittest
 
-from unitree_cleanup import close_rpc_client
+from handshake.unitree_cleanup import close_rpc_client
 
 
 class Channel:

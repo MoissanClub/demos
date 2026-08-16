@@ -1,4 +1,4 @@
-"""Non-blocking telemetry recording support for the handshake controller."""
+"""Trajectory recording and upload support for the handshake controller."""
 
 import json
 import os

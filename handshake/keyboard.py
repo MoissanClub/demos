@@ -1,4 +1,4 @@
-"""Non-blocking terminal exit-key handling for the handshake demo."""
+"""Non-blocking terminal exit-key handling for the handshake controller."""
 
 import os
 import select
