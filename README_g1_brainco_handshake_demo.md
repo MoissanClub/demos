@@ -63,14 +63,65 @@ under `handshake/`:
 handshake/
   controller.py       hardware orchestration and safe cleanup
   state.py            hardware-independent handshake state machine
+  vision.py           hand-presence detector and two-state vision machine
+  arm_policy.py       coordination between vision, tactile state, and arm pose
   speaker.py          non-blocking Unitree greeting
   keyboard.py         q/Q and Ctrl-C terminal handling
   recording.py        trajectory lifecycle and Hugging Face upload
   unitree_cleanup.py  explicit SDK DDS teardown
 ```
 
-Future vision detection and arm-policy coordination can be added as independent
-package modules without expanding the tactile handshake state machine.
+Vision and tactile behavior remain separate state machines. `arm_policy.py`
+combines their outputs without adding vision transitions to the tactile machine.
+
+## Vision-triggered invitation
+
+The standard `./demo.sh` launcher enables simple hand-presence detection. The
+vision machine has only two debounced states:
+
+```text
+no_hand -> hand_present -> no_hand
+```
+
+When presence is continuously detected for 0.25 seconds, the arm executes the
+configured `shake hand` action. An active handshake keeps the arm raised even
+if the camera briefly loses the hand. Once `releasing` begins, the controller
+waits at least one second and waits for the BrainCo hand-open confirmation (or
+its existing bounded timeout), then executes `release arm` regardless of the
+vision state. A stale `hand_present` result is ignored after that release until
+vision has reported `no_hand` once, preventing an immediate re-raise.
+
+This first detector remembers the first eight frames as an empty-scene
+reference and detects a hand-sized object entering the center 90% of that
+scene. It detects presence only: it does not produce coordinates, landmarks,
+identity, or gesture classification. The RealSense auto-exposure warmup and
+empty-scene calibration take roughly four seconds; keep hands out of view until
+the initial `vision: no_hand` message so the reference is clean.
+
+The default `realsense` backend reads the G1 head camera through
+`pyrealsense2`. The camera detected on this PC2 is an Intel RealSense D435I
+with serial `348522074156`. The first available RealSense is selected by
+default; use `--vision-realsense-serial` when more than one is attached.
+An OpenCV camera index, device path, or stream URL can be used instead:
+
+```bash
+./demo.sh --vision-camera /dev/video2 --dry-run --no-upload-trajectories
+```
+
+Useful tuning options are:
+
+```text
+--vision-present-seconds 0.25
+--vision-absent-seconds 0.75
+--vision-min-area 0.005
+--vision-roi-scale 0.9
+--arm-post-handshake-lower-delay 1.0
+```
+
+The console prints vision status only when the debounced state changes. A
+trajectory remains a tactile handshake session; vision-only invitations do not
+create empty trajectories. While a trajectory is active, `controller.decision`
+records `vision_state` and `vision_score` alongside the tactile decision.
 
 ## Read-only telemetry discovery
 

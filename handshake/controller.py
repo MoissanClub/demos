@@ -37,6 +37,13 @@ from typing import Any, Iterable, List, Optional, Sequence, Tuple
 from .state import HandshakeConfig, HandshakeState, HandshakeStateMachine
 from .speaker import SpeakerRunner, load_demo_config
 from .keyboard import KeyboardExitMonitor
+from .arm_policy import ArmPolicy
+from .vision import (
+    HandPresenceDetector,
+    VisionConfig,
+    VisionState,
+    parse_camera_source,
+)
 from .recording import (
     TrajectoryRecorder,
     UnitreeStateRecorder,
@@ -237,7 +244,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="Proceed even if hardware type does not report touch support.")
 
     parser.add_argument("--enable-arm", action="store_true",
-                        help="Also trigger a Unitree high-level arm action when touch starts closing.")
+                        help="Enable Unitree high-level arm actions.")
     parser.add_argument("--arm-network-interface", default=None,
                         help="DDS interface for Unitree arm and speaker services, e.g. eth0. Default: auto.")
     parser.add_argument("--arm-action", default=DEFAULT_ARM_ACTION,
@@ -248,6 +255,22 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="Deprecated compatibility option; delayed release is disabled for safety.")
     parser.add_argument("--arm-raise-guard-seconds", type=float, default=2.0,
                         help="Suppress tactile hold-release while the arm initially raises. Default: 2.0.")
+    parser.add_argument("--arm-post-handshake-lower-delay", type=float, default=1.0,
+                        help="Seconds after releasing begins before lowering an open hand. Default: 1.0.")
+    parser.add_argument("--enable-vision", action="store_true",
+                        help="Detect hand presence and use it to raise/lower the arm.")
+    parser.add_argument("--vision-camera", default="realsense",
+                        help="'realsense', OpenCV index, device path, or stream URL. Default: realsense.")
+    parser.add_argument("--vision-realsense-serial", default=None,
+                        help="Select a RealSense camera by serial number. Default: first available.")
+    parser.add_argument("--vision-present-seconds", type=float, default=0.25,
+                        help="Continuous detection required before hand_present. Default: 0.25.")
+    parser.add_argument("--vision-absent-seconds", type=float, default=0.75,
+                        help="Continuous absence required before no_hand. Default: 0.75.")
+    parser.add_argument("--vision-min-area", type=float, default=0.005,
+                        help="Minimum changed-region fraction for presence. Default: 0.005.")
+    parser.add_argument("--vision-roi-scale", type=float, default=0.9,
+                        help="Centered image fraction inspected for a hand. Default: 0.9.")
     parser.add_argument("--record-telemetry", action="store_true",
                         help="Record BrainCo, controller, and Unitree state to JSONL.")
     parser.add_argument("--telemetry-output", type=Path, default=None,
@@ -284,7 +307,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     if args.period < 0.02:
         parser.error("period must be at least 0.02 seconds")
     if (args.release_seconds < 0 or args.hold_duration < 0
-            or args.arm_release_delay < 0 or args.arm_raise_guard_seconds < 0):
+            or args.arm_release_delay < 0 or args.arm_raise_guard_seconds < 0
+            or args.arm_post_handshake_lower_delay < 0):
         parser.error("release-seconds, hold-duration, and arm timing values must be nonnegative")
     if args.duration < 0:
         parser.error("duration must be nonnegative")
@@ -304,6 +328,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         parser.error("telemetry-queue-size must be greater than zero")
     if args.telemetry_queue_size < 4:
         parser.error("telemetry-queue-size must be at least 4")
+    if args.enable_vision and not args.enable_arm:
+        parser.error("--enable-vision requires --enable-arm")
+    if args.vision_present_seconds < 0 or args.vision_absent_seconds < 0:
+        parser.error("vision confirmation times must be nonnegative")
+    if not 0.001 <= args.vision_min_area <= 1.0:
+        parser.error("vision-min-area must be between 0.001 and 1.0")
+    if not 0.1 <= args.vision_roi_scale <= 1.0:
+        parser.error("vision-roi-scale must be between 0.1 and 1.0")
     if args.record_telemetry and args.upload_trajectories and not args.hf_dataset_repo.strip():
         parser.error("hf-dataset-repo must be nonempty")
 
@@ -531,7 +563,10 @@ class ArmActionRunner:
             print(f"WARNING: arm action failed: {exc}", file=sys.stderr)
 
     def release_now(self) -> None:
-        if not self.enabled or self.dry_run or not self.release_action_name:
+        if not self.enabled or not self.release_action_name:
+            return
+        if self.dry_run:
+            print(f"arm: would execute {self.release_action_name!r}")
             return
 
         try:
@@ -622,6 +657,10 @@ async def main() -> int:
     print(f"greeting_phrase:   {greeting_phrase!r}")
     print(f"dry_run:           {args.dry_run}")
     print(f"enable_arm:        {args.enable_arm}")
+    print(f"enable_vision:     {args.enable_vision}")
+    if args.enable_vision:
+        print(f"vision_camera:     {args.vision_camera}")
+        print(f"post_hs_lower:     {args.arm_post_handshake_lower_delay}s")
     if args.enable_arm:
         print()
         print("ALERT: get the robot to regular mode")
@@ -630,6 +669,8 @@ async def main() -> int:
 
     ctx = None
     keyboard = KeyboardExitMonitor()
+    vision: Optional[HandPresenceDetector] = None
+    arm_policy = ArmPolicy(args.arm_post_handshake_lower_delay)
     arm = ArmActionRunner(
         enabled=args.enable_arm,
         dry_run=args.dry_run,
@@ -646,6 +687,27 @@ async def main() -> int:
     )
     try:
         arm.init()
+        dds_initialized = args.enable_arm and not args.dry_run
+        if args.enable_vision:
+            vision = HandPresenceDetector(
+                source=parse_camera_source(args.vision_camera),
+                config=VisionConfig(
+                    present_seconds=args.vision_present_seconds,
+                    absent_seconds=args.vision_absent_seconds,
+                ),
+                min_area_ratio=args.vision_min_area,
+                roi_scale=args.vision_roi_scale,
+                network_interface=args.arm_network_interface,
+                initialize_channel=args.vision_camera == "unitree" and not dds_initialized,
+                realsense_serial=args.vision_realsense_serial,
+            )
+            vision.start()
+            if args.vision_camera == "unitree":
+                dds_initialized = True
+            print(
+                "vision: enabled; states=no_hand -> hand_present, "
+                f"camera={args.vision_camera!r}"
+            )
         speaker.init(channel_initialized=args.enable_arm and not args.dry_run)
         if telemetry is not None:
             unitree_state = UnitreeStateRecorder(
@@ -655,7 +717,7 @@ async def main() -> int:
             )
             try:
                 # Outside dry-run, the speaker or arm setup has already initialized DDS.
-                unitree_state.start(channel_initialized=not args.dry_run)
+                unitree_state.start(channel_initialized=dds_initialized)
                 print(f"telemetry: subscribed to Unitree {args.unitree_state_topic!r}")
             except Exception as exc:
                 print(f"WARNING: Unitree state recording unavailable: {exc}", file=sys.stderr)
@@ -695,12 +757,15 @@ async def main() -> int:
         started_at = time.monotonic()
         tick = 0
         last_displayed_state: Optional[HandshakeState] = None
+        last_vision_state: Optional[VisionState] = None
 
         if not keyboard.start():
             print("keyboard: stdin is not a terminal; use Ctrl+C to exit.")
 
         print("Starting loop. Press Ctrl+C to stop.")
         print("State legend: open_wait -> closing -> hold -> releasing -> open_wait")
+        if args.enable_vision:
+            print("Vision legend: no_hand -> hand_present; presence invites by raising the arm.")
         print("Release behavior: open hand, confirm measured-open, then release arm.")
         print()
 
@@ -720,6 +785,15 @@ async def main() -> int:
             if args.duration > 0 and now - started_at >= args.duration:
                 print("Duration reached; exiting through safe cleanup.")
                 return 0
+            vision_state = VisionState.NO_HAND
+            vision_score = 0.0
+            if vision is not None:
+                if vision.error:
+                    raise RuntimeError(vision.error)
+                vision_state, vision_score = vision.snapshot()
+                if vision_state != last_vision_state:
+                    print(f"vision: {vision_state.value} (score={vision_score:.3f})")
+                    last_vision_state = vision_state
 
             try:
                 metric, detail, touch_data = await asyncio.wait_for(
@@ -811,6 +885,8 @@ async def main() -> int:
                         "event": decision.event,
                         "touch_metric": metric,
                         "hand_is_open": hand_is_open,
+                        "vision_state": vision_state.value if args.enable_vision else None,
+                        "vision_score": vision_score if args.enable_vision else None,
                     },
                 )
 
@@ -846,7 +922,7 @@ async def main() -> int:
                             "reason": decision.event or "state_machine",
                         },
                     )
-            if decision.trigger_arm:
+            if decision.trigger_arm and not args.enable_vision:
                 if telemetry is not None and telemetry.active:
                     telemetry.record("controller.event", {"event": "arm_action_requested", "action": args.arm_action})
                 arm.trigger()
@@ -854,7 +930,7 @@ async def main() -> int:
                 speaker.greet()
             if decision.state == HandshakeState.RELEASING and decision.event:
                 print(f"{decision.event}; opening hand before arm release.")
-            if decision.release_arm:
+            if decision.release_arm and not args.enable_vision:
                 if decision.event == "hand_open_timeout":
                     print("WARNING: hand-open confirmation timed out; releasing arm.", file=sys.stderr)
                 else:
@@ -865,6 +941,33 @@ async def main() -> int:
                         "controller.event",
                         {"event": "arm_release_requested", "action": args.arm_release_action},
                     )
+
+            if args.enable_vision:
+                arm_decision = arm_policy.update(
+                    vision_state,
+                    decision.state,
+                    now=decision_time,
+                    hand_open_complete=decision.release_arm,
+                )
+                if arm_decision.raise_arm:
+                    print(f"arm policy: raising arm (vision={vision_state.value}, hand={decision.state.value})")
+                    arm.trigger()
+                    if telemetry is not None and telemetry.active:
+                        telemetry.record(
+                            "controller.event",
+                            {"event": "arm_raise_requested", "reason": "vision_or_handshake"},
+                        )
+                elif arm_decision.lower_arm:
+                    print(
+                        "arm policy: lowering arm after handshake "
+                        f"(vision={vision_state.value}, hand={decision.state.value})"
+                    )
+                    arm.release_now()
+                    if telemetry is not None and telemetry.active:
+                        telemetry.record(
+                            "controller.event",
+                            {"event": "arm_lower_requested", "reason": "post_handshake_complete"},
+                        )
 
             state_changed = decision.state != last_displayed_state
             if state_changed:
@@ -916,6 +1019,11 @@ async def main() -> int:
         return 16
     finally:
         keyboard.stop()
+        if vision is not None:
+            try:
+                vision.close()
+            except BaseException as exc:
+                print(f"WARNING: could not close vision detector: {exc}", file=sys.stderr)
         if ctx is not None:
             try:
                 await asyncio.wait_for(

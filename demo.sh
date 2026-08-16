@@ -9,6 +9,7 @@ export CYCLONEDDS_HOME="${demo_dir}/.deps/cyclonedds-install"
 exec "${python_bin}" "${demo_dir}/g1_brainco_handshake_demo.py" \
   --right \
   --enable-arm \
+  --enable-vision \
   --record-telemetry \
   --arm-raise-guard-seconds 2.0 \
   --arm-network-interface eth0 \
