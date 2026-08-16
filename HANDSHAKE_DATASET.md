@@ -2,7 +2,8 @@
 
 This guide describes the data written by `g1_brainco_handshake_demo.py`. It is
 for people exploring recordings and for agents generating validators,
-visualizations, feature extraction, or statistical analysis code.
+visualizations, feature extraction, or statistical analysis code. The dataset is available at https://huggingface.co/datasets/davidwei79/g1-handshake-data
+
 
 ## Dataset unit and storage
 
