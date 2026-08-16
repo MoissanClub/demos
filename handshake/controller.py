@@ -633,7 +633,7 @@ async def main() -> int:
             return 2
 
     try:
-        greeting_phrase, speaker_id = load_demo_config(args.config)
+        greeting_phrase, invitation_phrase, speaker_id = load_demo_config(args.config)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         if telemetry is not None:
@@ -661,6 +661,7 @@ async def main() -> int:
     print(f"open_threshold:    {args.open_position_threshold}")
     print(f"open_timeout:      {args.open_confirm_timeout}s")
     print(f"greeting_phrase:   {greeting_phrase!r}")
+    print(f"invite_phrase:     {invitation_phrase!r}")
     print(f"dry_run:           {args.dry_run}")
     print(f"enable_arm:        {args.enable_arm}")
     print(f"enable_vision:     {args.enable_vision}")
@@ -935,6 +936,7 @@ async def main() -> int:
                 if telemetry is not None and telemetry.active:
                     telemetry.record("controller.event", {"event": "arm_action_requested", "action": args.arm_action})
                 arm.trigger()
+                speaker.say(invitation_phrase)
             if decision.entered_hold:
                 speaker.greet()
             if decision.state == HandshakeState.RELEASING and decision.event:
@@ -961,6 +963,7 @@ async def main() -> int:
                 if arm_decision.raise_arm:
                     print(f"arm policy: raising arm (vision={vision_state.value}, hand={decision.state.value})")
                     arm.trigger()
+                    speaker.say(invitation_phrase)
                     if telemetry is not None and telemetry.active:
                         telemetry.record(
                             "controller.event",

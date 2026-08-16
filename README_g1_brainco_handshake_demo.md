@@ -88,7 +88,8 @@ no_hand -> hand_present -> no_hand
 ```
 
 When presence is continuously detected for 0.25 seconds, the arm executes the
-configured `shake hand` action. An active handshake keeps the arm raised even
+configured `shake hand` action and non-blocking TTS says `你好`. An active
+handshake keeps the arm raised even
 if the camera briefly loses the hand. Once `releasing` begins, the controller
 waits at least one second and waits for the BrainCo hand-open confirmation (or
 its existing bounded timeout), then executes `release arm` regardless of the
@@ -631,6 +632,7 @@ The speaker greeting is loaded from `handshake_config.json`:
 ```json
 {
   "greeting_phrase": "很高兴认识你",
+  "invitation_phrase": "你好",
   "speaker_id": 0
 }
 ```
