@@ -1,25 +1,28 @@
-# Adaptive Handshake Data, Learning, and Face-Triggered Readiness Plan
+# Vision-Guided Adaptive Handshake Plan
 
 ## 1. Project objective
 
-Extend the existing Unitree G1 and BrainCo tactile handshake demo into a system that can:
+Extend the existing Unitree G1 and BrainCo tactile handshake demo along two
+parallel development tracks that converge into a safe, vision-guided handshake:
 
 1. Record synchronized tactile, hand motor, arm joint, and event data for each handshake.
 2. Validate and upload completed trajectories to a private Hugging Face dataset.
 3. Use the collected data to develop safer, more natural hand-pressure control and bounded arm-motion adaptation.
-4. Detect a person with the robot camera and move the arm into a verified half-raised readiness pose.
-5. Optionally recognize consenting, enrolled people for explicitly defined personalization features.
+4. Detect a human hand and estimate its three-dimensional position.
+5. Track the hand with a safely bounded inverse-kinematics arm controller.
+6. Optionally recognize consenting, enrolled people for explicitly defined personalization features.
 
-The work will be delivered as independently testable subsystems:
+The two tracks remain independently testable until their safety and exit
+criteria are satisfied:
 
 ```text
-Safe handshake controller
-        ↓
-Trajectory recorder and validator
-        ↓
-Private dataset and training pipeline
-        ↓
-Face-triggered readiness supervisor
+Vision track                              Handshake track
+Human-hand detection + XYZ                Trajectory validation + analysis
+        ↓                                       ↓
+Bounded IK hand tracking                  Bounded hold-state arm oscillation
+        └──────────────────┬─────────────────┘
+                           ↓
+              Integrated safety supervisor
 ```
 
 ## 2. Guiding principles
@@ -538,44 +541,125 @@ Add recognition only after face detection and readiness behavior are reliable an
 7. Several consistent frames before confirming identity.
 8. No identity-based grip-force changes without explicit preference data and safety validation.
 
-## 16. Phase 12: Integrated rollout levels
+## 16. Two-track high-level plan
 
-1. **Observe-only:** detect faces; never move.
-2. **Prompt mode:** report that the system would prepare the arm.
-3. **Operator-confirmed:** stable face plus button confirmation raises the arm.
-4. **Autonomous preparation:** stable face raises the arm halfway.
-5. **Contact-triggered fixed handshake:** tactile contact starts the known high-level action.
-6. **Adaptive pressure:** a learned hand controller operates inside hard constraints.
-7. **Adaptive arm timing:** limited learned adjustments operate inside a verified trajectory envelope.
+### Track 1: Vision and arm tracking
 
-Each level must require an explicit configuration flag. Dry-run or hand-only behavior remains the safe default.
+#### 1A. Human-hand detection and 3D localization
 
-## 17. Immediate execution order
+1. Replace generic foreground-motion detection with a detector that identifies
+   a human hand.
+2. Combine the detection with RealSense depth to estimate a target `(x, y, z)`
+   in camera coordinates.
+3. Calibrate and transform the target into the robot torso/arm coordinate frame.
+4. Stabilize the estimate with confidence gating, temporal filtering, target
+   persistence, and explicit target-loss behavior.
+5. Measure detection accuracy, range, latency, update rate, and jitter.
+6. Complete this stage in observe-only mode with overlays and structured logs;
+   it must not command robot motion.
 
-- [x] Harden shutdown and error handling in software; hardware interruption tests remain.
-- [x] Serialize Unitree arm action calls.
-- [x] Validate thresholds and hand addressing defaults.
-- [x] Extract and test the state machine.
-- [x] Build the BrainCo and Unitree read-only telemetry probe; live rate validation remains.
-- [ ] Publish the telemetry field/rate/unit report.
-- [ ] Finalize schema version 1.
-- [ ] Implement local Parquet episode recording.
-- [ ] Record ten dry-run episodes.
-- [ ] Record fifty real local episodes.
-- [ ] Implement validator and plots.
-- [ ] Add post-handshake human labels.
-- [ ] Create the private Hugging Face dataset and spool uploader.
-- [ ] Upload and verify the first validated batch.
-- [ ] Collect 300-500 labeled episodes.
-- [ ] Establish participant/session-based dataset splits.
-- [ ] Train and evaluate the contact-state estimator.
-- [ ] Train and shadow-test bounded pressure control.
-- [ ] Integrate camera-only face detection.
-- [ ] Add operator-confirmed half-raise.
-- [ ] Add autonomous half-raise and safe return.
-- [ ] Decide whether face recognition provides enough value to justify its privacy cost.
-- [ ] Extend greetings beyond Chinese using configurable pre-rendered audio playback.
-- [ ] Add a small, bounded arm oscillation during `hold` after joint telemetry and control-mode validation.
+Exit criterion: a human hand can be localized reliably inside a defined safe
+interaction volume, with uncertainty and loss reported explicitly.
+
+#### 1B. Arm tracking through bounded inverse kinematics
+
+1. Define a safe end-effector handshake pose relative to the detected hand.
+2. Solve IK within verified joint, velocity, acceleration, workspace, and
+   collision constraints.
+3. Smooth and rate-limit both the target and commanded joint trajectory.
+4. Add target-loss, stale-telemetry, timeout, cancellation, IK-failure, and
+   safe-return paths.
+5. Validate in stages: offline solutions and plots, command-only dry run,
+   operator-confirmed arm-only motion, then autonomous tracking.
+
+Exit criterion: the arm follows a slowly moving test hand inside the approved
+workspace and returns safely for every loss or failure condition.
+
+### Track 2: Handshake behavior
+
+#### 2A. Trajectory validation and data analysis
+
+1. Implement an episode validator and run it over all existing recordings.
+2. Classify episodes as successful, aborted, rejected, or incomplete.
+3. Report stream completeness, sampling rates, timestamp gaps, dropped samples,
+   field ranges, required transitions, and safe-open/arm-release evidence.
+4. Plot tactile signals, commanded and measured finger positions, active-arm
+   joints, estimated torque, and controller states.
+5. Publish the telemetry field/rate/unit report and characterize the current
+   high-level handshake action.
+6. Treat JSONL as the immutable raw format for now; evaluate Parquet as a
+   derived analysis/training representation.
+7. Diagnose the unfinalized trajectory from the 2026-08-16 09:46 session.
+
+Exit criterion: every existing episode has a reproducible validation result,
+and the active arm motion and telemetry quality are understood well enough to
+define control bounds.
+
+#### 2B. Bounded hold-state arm oscillation
+
+1. Use the analyzed arm trajectory to select the smallest appropriate joint set.
+2. Generate and plot a smooth, low-amplitude oscillation offline.
+3. Enforce hard position, velocity, acceleration, torque, duration, pressure,
+   and telemetry-freshness limits.
+4. Stop immediately on tactile release, state exit, excessive pressure or
+   torque, stale data, timeout, cancellation, or command failure.
+5. Validate in stages: offline trajectory, live command logging, arm-only
+   motion, open robotic hand, and finally a loose human handshake at minimum
+   amplitude and duration.
+
+Exit criterion: a repeatable subtle oscillation operates only during `hold`,
+stops before hand-first release, and cannot interfere with safe arm lowering.
+
+### Track integration
+
+Integrate the tracks only after each subsystem meets its independent exit
+criteria:
+
+```text
+detect hand -> estimate XYZ -> bounded IK approach -> tactile contact
+-> controlled closing -> bounded hold oscillation -> open hand
+-> safe arm return
+```
+
+Vision governs approach and readiness. The tactile state machine governs grasp,
+hold, and release. A shared safety supervisor can stop either subsystem, and
+neither subsystem may bypass it.
+
+## 17. Immediate execution plan
+
+The next deliverable is **validated trajectory analysis plus an observe-only
+3D hand-localization prototype**. Work proceeds in parallel where practical.
+
+### Handshake/data work
+
+1. Implement the episode validator.
+2. Run it over all current trajectories and investigate the incomplete 09:46
+   recording.
+3. Generate plots and the telemetry field/rate/unit report, emphasizing the
+   right-arm joints during the current high-level action.
+4. Use the results to propose the oscillating joint set, initial amplitude,
+   frequency, duration, and hard safety bounds.
+5. Implement only an offline oscillation trajectory generator and plots at this
+   stage; do not send new joint commands to hardware yet.
+
+### Vision work
+
+1. Establish and measure the RealSense color/depth baseline.
+2. Select and prototype a human-hand detector.
+3. Fuse the detected hand with depth and log filtered `(x, y, z)` coordinates.
+4. Define the camera-to-robot calibration procedure and the initial safe
+   interaction volume.
+5. Evaluate accuracy, jitter, latency, occlusion, multiple-hand ambiguity, and
+   target loss in observe-only mode.
+
+### Planning and data decisions
+
+1. Update completed milestones as validation evidence is produced.
+2. Preserve JSONL recordings as immutable raw evidence.
+3. Decide the derived Parquet layout only after the validator exposes the
+   actual stream shapes and analysis requirements.
+4. Continue collecting toward fifty validated real episodes after validation
+   and labeling tools are available.
 
 ### Next step: non-Chinese greeting support
 
@@ -701,3 +785,4 @@ These decisions should be recorded here as they are resolved:
 | 2026-08-04 | 0.6 | Added a hand-first releasing state with measured-open confirmation before lowering the arm. |
 | 2026-08-04 | 0.7 | Added a future bounded hold-state arm oscillation plan gated on telemetry and controller-mode validation. |
 | 2026-08-16 | 0.8 | Added the Phase 1 read-only BrainCo and Unitree telemetry discovery probe. |
+| 2026-08-16 | 0.9 | Reorganized future work into parallel vision/IK and handshake-analysis/oscillation tracks with a shared immediate plan. |
