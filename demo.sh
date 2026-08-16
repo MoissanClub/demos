@@ -10,5 +10,6 @@ exec "${python_bin}" "${demo_dir}/g1_brainco_handshake_demo.py" \
   --right \
   --enable-arm \
   --record-telemetry \
+  --arm-raise-guard-seconds 2.0 \
   --arm-network-interface eth0 \
   "$@"

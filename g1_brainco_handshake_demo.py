@@ -241,6 +241,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help=f"Unitree arm action to run after the shake. Default: {DEFAULT_ARM_RELEASE_ACTION!r}.")
     parser.add_argument("--arm-release-delay", type=float, default=4.0,
                         help="Deprecated compatibility option; delayed release is disabled for safety.")
+    parser.add_argument("--arm-raise-guard-seconds", type=float, default=2.0,
+                        help="Suppress tactile hold-release while the arm initially raises. Default: 2.0.")
     parser.add_argument("--record-telemetry", action="store_true",
                         help="Record BrainCo, controller, and Unitree state to JSONL.")
     parser.add_argument("--telemetry-output", type=Path, default=None,
@@ -276,8 +278,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         parser.error("step must be between 1 and 1000")
     if args.period < 0.02:
         parser.error("period must be at least 0.02 seconds")
-    if args.release_seconds < 0 or args.hold_duration < 0 or args.arm_release_delay < 0:
-        parser.error("release-seconds, hold-duration, and arm-release-delay must be nonnegative")
+    if (args.release_seconds < 0 or args.hold_duration < 0
+            or args.arm_release_delay < 0 or args.arm_raise_guard_seconds < 0):
+        parser.error("release-seconds, hold-duration, and arm timing values must be nonnegative")
     if args.duration < 0:
         parser.error("duration must be nonnegative")
     if args.open_repeat <= 0 or args.sensor_timeout <= 0:
@@ -429,18 +432,21 @@ class ArmActionRunner:
         network_interface: Optional[str],
         action_name: str,
         release_action_name: str,
+        raise_guard_seconds: float,
     ) -> None:
         self.enabled = enabled
         self.dry_run = dry_run
         self.network_interface = network_interface
         self.action_name = action_name
         self.release_action_name = release_action_name
+        self.raise_guard_seconds = raise_guard_seconds
         self.client: Any = None
         self.action_map: Any = None
         self._thread_lock = threading.Lock()
         self._client_lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._release_sent = threading.Event()
+        self._triggered_at: Optional[float] = None
 
     def init(self, initialize_channel: bool = True) -> None:
         if not self.enabled:
@@ -495,14 +501,19 @@ class ArmActionRunner:
             if self._thread is not None and self._thread.is_alive():
                 return
             self._release_sent.clear()
+            self._triggered_at = time.monotonic()
             self._thread = threading.Thread(target=self._run_sequence, name="arm_action", daemon=True)
             self._thread.start()
+
+    def raise_guard_active(self, now: Optional[float] = None) -> bool:
+        if not self.enabled or self._triggered_at is None:
+            return False
+        current = time.monotonic() if now is None else now
+        return current - self._triggered_at < self.raise_guard_seconds
 
     def _run_sequence(self) -> None:
         if self.dry_run:
             print(f"arm: would execute {self.action_name!r}")
-            if self.release_action_name:
-                print(f"arm: would execute {self.release_action_name!r} after {self.release_delay:.1f}s")
             return
 
         try:
@@ -611,6 +622,7 @@ async def main() -> int:
         network_interface=args.arm_network_interface,
         action_name=args.arm_action,
         release_action_name=args.arm_release_action,
+        raise_guard_seconds=args.arm_raise_guard_seconds,
     )
     speaker = SpeakerRunner(
         phrase=greeting_phrase,
@@ -715,7 +727,13 @@ async def main() -> int:
             )
 
             state_before = machine.state
-            decision = machine.update(metric, time.monotonic(), hand_is_open=hand_is_open)
+            decision_time = time.monotonic()
+            decision = machine.update(
+                metric,
+                decision_time,
+                hand_is_open=hand_is_open,
+                allow_hold_release=not arm.raise_guard_active(decision_time),
+            )
             starts_trajectory = (
                 telemetry is not None
                 and state_before == HandshakeState.OPEN_WAIT
@@ -741,6 +759,7 @@ async def main() -> int:
                             "step": args.step,
                             "period": args.period,
                             "thumb_scale": args.thumb_scale,
+                            "arm_raise_guard_seconds": args.arm_raise_guard_seconds,
                         },
                     },
                     timestamp_ns=touch_received_ns,

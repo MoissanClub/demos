@@ -71,6 +71,33 @@ class HandshakeStateMachineTests(unittest.TestCase):
         self.assertEqual(decision.state, HandshakeState.RELEASING)
         self.assertFalse(decision.release_arm)
 
+    def test_hold_release_is_suppressed_during_arm_raise_guard(self):
+        machine = HandshakeStateMachine(config(release_seconds=0.7))
+        machine.update(60.0, 0.0)
+        machine.update(300.0, 0.1)
+
+        machine.update(0.0, 0.2, allow_hold_release=False)
+        decision = machine.update(0.0, 1.2, allow_hold_release=False)
+        self.assertEqual(decision.state, HandshakeState.HOLD)
+
+        machine.update(0.0, 1.3, allow_hold_release=True)
+        decision = machine.update(0.0, 1.9, allow_hold_release=True)
+        self.assertEqual(decision.state, HandshakeState.HOLD)
+
+        decision = machine.update(0.0, 2.0, allow_hold_release=True)
+        self.assertEqual(decision.state, HandshakeState.RELEASING)
+        self.assertEqual(decision.event, "release_during_hold")
+
+    def test_hold_timeout_remains_active_during_arm_raise_guard(self):
+        machine = HandshakeStateMachine(config(hold_duration=1.0))
+        machine.update(60.0, 0.0)
+        machine.update(300.0, 0.1)
+
+        decision = machine.update(300.0, 1.1, allow_hold_release=False)
+
+        self.assertEqual(decision.state, HandshakeState.RELEASING)
+        self.assertEqual(decision.event, "hold_timeout")
+
     def test_releasing_times_out_before_lowering_arm(self):
         machine = HandshakeStateMachine(config(open_timeout=1.0))
         machine.update(60.0, 0.0)

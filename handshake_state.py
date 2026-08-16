@@ -47,13 +47,19 @@ class HandshakeStateMachine:
         self.rearm_started: Optional[float] = None
         self.hold_started: Optional[float] = None
 
-    def update(self, metric: float, now: float, hand_is_open: bool = False) -> HandshakeDecision:
+    def update(
+        self,
+        metric: float,
+        now: float,
+        hand_is_open: bool = False,
+        allow_hold_release: bool = True,
+    ) -> HandshakeDecision:
         if self.state == HandshakeState.OPEN_WAIT:
             return self._update_open_wait(metric, now)
         if self.state == HandshakeState.CLOSING:
             return self._update_closing(metric, now)
         if self.state == HandshakeState.HOLD:
-            return self._update_hold(metric, now)
+            return self._update_hold(metric, now, allow_hold_release)
         return self._update_releasing(now, hand_is_open)
 
     def _update_open_wait(self, metric: float, now: float) -> HandshakeDecision:
@@ -98,11 +104,13 @@ class HandshakeStateMachine:
             event=event,
         )
 
-    def _update_hold(self, metric: float, now: float) -> HandshakeDecision:
+    def _update_hold(self, metric: float, now: float, allow_release: bool) -> HandshakeDecision:
         if self.hold_started is not None and now - self.hold_started >= self.config.hold_duration:
             return self._begin_release(now, "hold_timeout")
 
-        if self._release_confirmed(metric, now):
+        if not allow_release:
+            self.release_started = None
+        elif self._release_confirmed(metric, now):
             return self._begin_release(now, "release_during_hold")
 
         return self._decision()

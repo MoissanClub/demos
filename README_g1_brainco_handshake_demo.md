@@ -117,7 +117,7 @@ never removes the local trajectory files. Use `--no-upload-trajectories` for a
 local-only run.
 
 For the standard right-hand arm demo with trajectory recording and post-run
-upload, use the launcher:
+upload, including the default 2-second arm-raise release guard, use the launcher:
 
 ```bash
 ./demo.sh
@@ -451,6 +451,12 @@ Use:
   Maximum time to remain in hold before entering the hand-first release sequence.
   Default:
     5.0
+
+--arm-raise-guard-seconds SECONDS
+  While the initial arm action is raising the arm, suppress low-touch
+  release_during_hold detection. The hold timeout and cleanup remain active.
+  Default:
+    2.0
 
 --max-close VALUE
   Maximum close command.
