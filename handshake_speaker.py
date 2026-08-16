@@ -5,6 +5,8 @@ import sys
 import threading
 from typing import Any, Optional, Tuple
 
+from unitree_cleanup import close_rpc_client
+
 
 def load_demo_config(path: str) -> Tuple[str, int]:
     """Load and validate settings that are intended to change without code edits."""
@@ -85,3 +87,9 @@ class SpeakerRunner:
             print(f"speaker: said {self.phrase!r}, ret={ret}")
         except Exception as exc:
             print(f"WARNING: greeting failed: {exc}", file=sys.stderr)
+
+    def close(self) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout=10.0)
+        close_rpc_client(self.client)
+        self.client = None

@@ -271,3 +271,8 @@ class UnitreeStateRecorder:
             timestamp_ns=timestamp_ns,
             topic=self.topic,
         )
+
+    def close(self) -> None:
+        if self.subscriber is not None:
+            self.subscriber.Close()
+            self.subscriber = None

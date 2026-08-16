@@ -279,7 +279,10 @@ Status lines, including per-finger details such as `thumb=...`, are printed only
 when the controller state changes. Sensor polling and telemetry recording still
 continue at the configured control-loop rate. On initial entry into `open_wait`
 and each return to it, the console prints `press Q to exit the handshake
-program`.
+program`. Pressing either `q` or `Q` exits without requiring Enter and still
+runs safe hand-open, arm-release, trajectory-finalization, and upload cleanup.
+`Ctrl+C` remains supported. When standard input is not a terminal, only
+`Ctrl+C` is advertised.
 
 ## First motion test: conservative
 

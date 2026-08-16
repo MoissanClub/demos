@@ -36,11 +36,13 @@ from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 from handshake_state import HandshakeConfig, HandshakeState, HandshakeStateMachine
 from handshake_speaker import SpeakerRunner, load_demo_config
+from handshake_keyboard import KeyboardExitMonitor
 from telemetry_recording import (
     TrajectoryRecorder,
     UnitreeStateRecorder,
     upload_trajectories,
 )
+from unitree_cleanup import close_rpc_client
 
 
 DEFAULT_LEFT_PORT = "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA1LW3T-if02-port0"
@@ -543,6 +545,14 @@ class ArmActionRunner:
             self._release_sent.set()
         print(f"arm: executed {self.release_action_name!r}, ret={ret}")
 
+    def close(self) -> None:
+        with self._thread_lock:
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout=10.0)
+        close_rpc_client(self.client)
+        self.client = None
+
 
 async def maybe_get_motor_positions(
     ctx: Any, slave_id: int, timeout: float
@@ -616,6 +626,7 @@ async def main() -> int:
     print()
 
     ctx = None
+    keyboard = KeyboardExitMonitor()
     arm = ArmActionRunner(
         enabled=args.enable_arm,
         dry_run=args.dry_run,
@@ -682,6 +693,9 @@ async def main() -> int:
         tick = 0
         last_displayed_state: Optional[HandshakeState] = None
 
+        if not keyboard.start():
+            print("keyboard: stdin is not a terminal; use Ctrl+C to exit.")
+
         print("Starting loop. Press Ctrl+C to stop.")
         print("State legend: open_wait -> closing -> hold -> releasing -> open_wait")
         print("Release behavior: open hand, confirm measured-open, then release arm.")
@@ -697,6 +711,9 @@ async def main() -> int:
         )
         while True:
             now = time.monotonic()
+            if keyboard.exit_requested.is_set():
+                print("Q pressed; exiting through safe cleanup.")
+                return 0
             if args.duration > 0 and now - started_at >= args.duration:
                 print("Duration reached; exiting through safe cleanup.")
                 return 0
@@ -855,7 +872,10 @@ async def main() -> int:
                     f"close_cmd={decision.close_value:4d}{pos_str} | {detail}"
                 )
                 if decision.state == HandshakeState.OPEN_WAIT:
-                    print("press Q to exit the handshake program")
+                    if keyboard.enabled:
+                        print("press Q to exit the handshake program")
+                    else:
+                        print("press Ctrl+C to exit the handshake program")
                 last_displayed_state = decision.state
 
             tick += 1
@@ -892,6 +912,7 @@ async def main() -> int:
         print(f"ERROR: unexpected {type(exc).__name__}: {exc}", file=sys.stderr)
         return 16
     finally:
+        keyboard.stop()
         if ctx is not None:
             try:
                 await asyncio.wait_for(
@@ -933,6 +954,20 @@ async def main() -> int:
                 sdk.modbus_close(ctx)
             except Exception:
                 pass
+        # Unitree SDK reader threads must stop before interpreter finalization.
+        try:
+            if unitree_state is not None:
+                unitree_state.close()
+        except BaseException as exc:
+            print(f"WARNING: could not close Unitree state subscriber: {exc}", file=sys.stderr)
+        try:
+            speaker.close()
+        except BaseException as exc:
+            print(f"WARNING: could not close speaker client: {exc}", file=sys.stderr)
+        try:
+            arm.close()
+        except BaseException as exc:
+            print(f"WARNING: could not close arm client: {exc}", file=sys.stderr)
         # Finalize recording only after hand/arm cleanup and Modbus closure.
         if telemetry is not None:
             telemetry.close()
