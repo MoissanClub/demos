@@ -204,6 +204,25 @@ Additional controller options are forwarded to Python, for example:
 ./demo.sh --duration 30 --max-close 400
 ```
 
+### Validate recorded trajectories
+
+Validate every finalized or incomplete trajectory under the default directory:
+
+```bash
+python validate_handshake_trajectories.py telemetry/trajectories
+```
+
+The validator streams each JSONL file, checks its lifecycle and UUIDs, reports
+malformed records and missing streams, verifies successful state progression,
+detects recorded vision signals and complete `open_wait` state cycles, and
+calculates per-stream counts, inferred sample frequencies, maximum gaps, and
+timestamp-ordering violations. Frequency is the inverse median of positive
+sample intervals. For each stream, the validator scans the resulting time grid
+and reports whether and how many expected points lack a sample within plus or
+minus 10% of the inferred period. Use `--json` for
+machine-readable output or `--output REPORT.json` to write the full report.
+Validation never modifies raw recordings.
+
 ## Hardware and port mapping
 
 On this G1 setup, the BrainCo module is connected through one USB-C cable, but Linux sees one FTDI FT4232H device exposing four serial interfaces:

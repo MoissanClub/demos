@@ -67,7 +67,7 @@ Implementation does not imply that a physical exit criterion has been met.
 | JSONL trajectory lifecycle and schema | Implemented | Validate every lifecycle outcome and reconcile incomplete recordings. |
 | Non-blocking trajectory recording | Implemented; scale validation open | Demonstrate 50 valid local episodes, bounded control timing, dropped-sample reporting, and recorder-failure isolation. |
 | Hugging Face upload | Initial post-run upload implemented | Verify privacy and idempotence; decide whether a separate durable spool/uploader is required. |
-| Episode validator, plots, and review workflow | Planned | Implement and run over all existing recordings. |
+| Episode validator | Implemented; first baseline complete | Extend with plots and telemetry analysis; decide how rejected data is quarantined. |
 | Depth-gated visual invitation | Interim implementation | It detects depth-gated scene change, not a semantic human hand or hand position. |
 | Semantic hand detection and 3D localization | Planned | Prototype and validate in observe-only mode. |
 | Bounded inverse-kinematics approach | Planned | Requires calibrated coordinates, verified limits, target-loss handling, and staged hardware validation. |
