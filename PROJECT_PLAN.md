@@ -72,6 +72,8 @@ Implementation does not imply that a physical exit criterion has been met.
 | Semantic hand detection and 3D localization | Planned | Prototype and validate in observe-only mode. |
 | Bounded inverse-kinematics approach | Planned | Requires calibrated coordinates, verified limits, target-loss handling, and staged hardware validation. |
 | Bounded hold-state arm oscillation | Planned | Requires trajectory analysis and confirmation of the supported Unitree control mode. |
+| Self-balance validation with gantry | Planned | Requires 2B completion and confirmation that native lower-body stabilization remains active during arm control. |
+| Staged validation without gantry | Planned | Requires reviewed 2C evidence, a defined test envelope, and explicit approval. |
 | Integrated safety supervisor | Planned | Integrate only after both tracks independently meet their exit criteria. |
 | Learning and personalization | Future | Requires validated data, labels, deterministic bounds, and consent controls. |
 
@@ -150,20 +152,102 @@ Prerequisites:
 3. Identify the smallest joint set that can produce a natural vertical shake.
 4. Verify the supported control mode and safe transitions into and out of
    bounded joint control.
+5. Attach the robot to a reviewed, load-rated gantry/fall-arrest system before
+   every physical test in this milestone. Verify attachment, clearance, travel,
+   emergency-stop access, and the exclusion zone before enabling the robot.
 
 Required behavior:
 
 - Generate and plot a smooth, low-amplitude trajectory offline first.
+- Before enabling repeated oscillation, validate one very small, slow movement
+  during `hold`. Stage it as command logging only, arm-only motion, motion with
+  the robotic hand open, and then controlled contact with a nonhuman fixture.
+  Limit it to one bounded movement and return to the verified hold pose. Human
+  contact is deferred to 2D after balance validation.
 - Enforce hard position, velocity, acceleration, torque, pressure, duration,
   workspace, and telemetry-freshness limits.
 - Stop on tactile release, state exit, excessive pressure or torque, stale data,
   timeout, cancellation, emergency stop, or command failure.
 - Validate in order: offline trajectory, live command logging, arm-only motion,
-  open robotic hand, then a loose human handshake at minimum amplitude and
-  duration.
+  open robotic hand, one minor movement against a nonhuman fixture, then
+  repeated oscillation at minimum amplitude and duration against that fixture.
+- Run every physical stage with the gantry attached. The gantry must not be
+  treated as evidence that balance control is functioning or as permission to
+  exceed the approved motion and contact envelope.
 
 Exit criterion: a repeatable subtle oscillation operates only during `hold`,
 stops before hand-first release, and cannot interfere with safe arm lowering.
+All physical evidence for this milestone is collected with the gantry attached.
+
+### 2C. Self-balance validation with gantry attached
+
+This milestone verifies that Unitree's native lower-body stabilization and
+recovery behavior remain available while bounded arm control is active. It must
+not rely on the gantry to create or mask a stable result.
+
+Prerequisites:
+
+1. Complete 2B and review its command, measured-state, abort, and release data.
+2. Confirm the intended standing/balance mode and the documented ownership of
+   legs, waist, and arms for the exact robot model and firmware.
+3. Define conservative torso attitude, angular-rate, foot-contact, joint,
+   torque, workspace, and recovery-step limits.
+4. Use a reviewed, load-rated gantry/fall-arrest setup, a clear exclusion zone,
+   and a dedicated emergency-stop operator.
+
+Required behavior:
+
+- Keep leg control under Unitree's native balance controller. Keep the waist
+  under native control unless separate ownership is explicitly documented and
+  approved.
+- Begin with no-contact standing trials, then use a controlled nonhuman fixture
+  to apply small, repeatable disturbances inside an approved envelope.
+- Compare native balance behavior with arm-SDK authority disabled and enabled,
+  including the bounded movement and the frozen/non-participating joint policy.
+- Record torso motion, foot/contact state where available, lower-body joint
+  response, locomotion or balance mode, arm commands, authority weight, and any
+  recovery step or controller transition.
+- On instability, unexpected stepping, loss of foot contact, limit violation,
+  stale telemetry, or balance-mode change, cancel the handshake motion and
+  transfer arm authority through the verified controlled-release path.
+- Do not use a person to generate the balance disturbance during this
+  milestone.
+
+Exit criterion: with the gantry slack and non-load-bearing during nominal
+trials, the native controller demonstrates repeatable stabilization or bounded
+recovery while arm control is active; arm cancellation and authority release
+remain controlled in every tested balance event; and the reviewed telemetry
+shows no unsafe interference from frozen or commanded upper-body joints.
+
+### 2D. Staged validation without gantry
+
+Removing the gantry is a separate approval gate, not an automatic continuation
+of 2C.
+
+Prerequisites:
+
+1. Complete and review the 2C exit evidence.
+2. Resolve every unexplained balance, stepping, controller-ownership, command,
+   release, or telemetry anomaly.
+3. Define a smaller initial motion and disturbance envelope, test surface,
+   clearance area, spotter roles, emergency-stop procedure, and abort criteria.
+4. Record explicit approval for the exact robot configuration, firmware,
+   controller version, and test procedure.
+
+Validation order:
+
+1. Unsupported standing with arm-SDK disabled and no contact.
+2. Arm-SDK enabled with zero motion and no contact.
+3. One minimum-amplitude arm movement with the robotic hand open and no contact.
+4. Controlled nonhuman-fixture trials within the approved balance envelope.
+5. Conservative human-contact testing only after separate review and explicit
+   approval of the preceding results.
+
+Exit criterion: the robot completes the approved unsupported trials without an
+unplanned step, fall-arrest intervention, unsafe balance excursion, controller
+conflict, or uncontrolled arm-authority transition. Any failure returns the
+program to gantry-attached testing and closes the without-gantry gate pending
+review.
 
 ## Track integration
 
