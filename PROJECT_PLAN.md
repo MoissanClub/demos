@@ -1,11 +1,11 @@
-# Vision-Guided Adaptive Handshake Plan
+# Vision- and Touch-Guided Adaptive Handshake Plan
 
 ## Purpose and document boundaries
 
 This is the durable engineering roadmap for extending the Unitree G1 and
-BrainCo tactile handshake into a safe, vision-guided, adaptive interaction. It
-records milestones, dependencies, safety gates, exit criteria, and unresolved
-decisions.
+BrainCo tactile handshake into a safe, vision- and touch-guided learned
+interaction. It records the target control architecture, milestones,
+dependencies, safety gates, exit criteria, and unresolved decisions.
 
 Use the other project documents for information that changes more frequently:
 
@@ -20,32 +20,135 @@ Use the other project documents for information that changes more frequently:
 
 ## Objective
 
-Develop two independently testable tracks that converge into a safely bounded
-handshake:
+Build a learned handshake policy that can use vision, tactile feedback, and
+robot state as observations and produce custom arm and hand movement while
+preserving Unitree's native lower-body balance controller.
+
+The target runtime architecture is:
 
 ```text
-Vision track                              Handshake track
-Human-hand detection + XYZ                Trajectory validation + analysis
-        ↓                                       ↓
-Bounded IK hand tracking                  Bounded hold-state arm oscillation
-        └──────────────────┼─────────────────╯
-                           ↓
-              Integrated safety supervisor
+                         PC2
+              ┌───────────────────────┐
+RealSense ────>│                       │
+BrainCo touch >│ observations          │
+G1 LowState ──>│                       │
+              │ vision + touch policy │
+              │                       │
+              │       actions         │
+              └───────┬───────┬───────┘
+                      │       │
+              arm q targets   finger targets
+                      │       │
+              safety/filter   BrainCo SDK
+                      │       │
+                      ▼       ▼
+                 rt/arm_sdk  hand
+                      │
+                      ▼
+                 G1 arm joints
+
+                         PC1
+              ┌───────────────────────┐
+              │ Unitree Regular      │
+              │ Motion Controller    │
+              │                      │
+              │ legs / balance /     │
+              │ locomotion remain    │
+              │ under native control │
+              └───────────────────────┘
 ```
 
-The longer-term goal is to use recorded interaction data to improve grip,
-timing, arm motion, and social behavior without allowing learned components to
-bypass deterministic safety constraints.
+The key architectural decision is to run custom upper-body control from PC2
+through `rt/arm_sdk` while the G1 remains in Unitree Regular/Motion Control
+mode. Do not use whole-body `rt/lowcmd` for the normal learned-policy runtime.
+This follows the split-control pattern demonstrated by Unitree's
+`xr_teleoperate --motion` path: custom arm control coexists with the native
+lower-body motion controller.
+
+The intended development sequence is deliberately incremental:
+
+```text
+existing high-level Unitree handshake action
+                ↓
+custom rt/arm_sdk actuator with no learned policy
+                ↓
+bounded deterministic arm trajectory
+                ↓
+vision-guided approach + tactile handshake
+                ↓
+learned policy proposes bounded arm/hand actions
+```
+
+## Control architecture decisions
+
+### Robot operating mode
+
+For the target runtime:
+
+- Run application and policy code on PC2.
+- Keep the G1 in Unitree Regular/Motion Control mode.
+- Use `rt/arm_sdk` for custom arm joint commands.
+- Leave legs and native self-balancing/locomotion under Unitree's controller.
+- Leave waist/body ownership under Unitree initially unless separate ownership
+  is explicitly documented and validated.
+- Control BrainCo fingers through the BrainCo SDK, independently of
+  `rt/arm_sdk`.
+- Subscribe to `rt/lowstate` for measured G1 joint and IMU state.
+
+Debug/development whole-body low-level mode and `rt/lowcmd` are not the normal
+runtime architecture because they can transfer responsibility for lower-body
+joints away from Unitree's native balance controller.
+
+### `rt/arm_sdk` actuator contract
+
+The custom arm actuator should support:
+
+- joint position targets `q`;
+- optional joint velocity targets `dq`;
+- feed-forward torque `tau` only after separate validation;
+- conservative, explicit `kp` and `kd` gains;
+- arm-SDK authority/blending weight with gradual acquisition and release;
+- current arm state from `rt/lowstate`;
+- joint-limit, velocity, acceleration, workspace, timeout, and stale-state
+  enforcement;
+- controlled cancellation and safe return/release behavior.
+
+Initial policy deployment should use position-dominant control: learned or
+heuristic `q_target`, zero desired velocity, zero feed-forward torque, and
+fixed conservative gains. Learned torque control is out of scope for the first
+policy.
+
+### Control-rate separation
+
+Do not require neural inference to run at the arm command rate. Use separate
+loops, approximately:
+
+```text
+camera / vision          ~30 Hz
+BrainCo tactile          measured sustainable rate
+policy inference         ~10-30 Hz initially
+arm command/interpolate  high-rate loop, target ~250 Hz if validated
+hand command             measured sustainable rate
+Unitree balance          native/internal
+```
+
+The arm actuator interpolates or filters policy targets between inference
+updates and rejects stale targets.
 
 ## Safety principles
 
-- Robot control must not depend on disk, camera, network, or upload availability.
-- Hand opening, arm release, cancellation, timeout, and safe return take priority
-  over recording, speech, perception, and learned behavior.
+- Robot control must not depend on disk, camera, network, model inference, or
+  upload availability.
+- Hand opening, arm release, cancellation, timeout, and safe return take
+  priority over recording, speech, perception, and learned behavior.
 - Every failure path should attempt to open the hand before releasing or safely
-  returning the arm.
+  returning the arm when physically appropriate.
 - Learned outputs remain behind deterministic position, velocity, acceleration,
   pressure, torque, temperature, workspace, timeout, and stale-data limits.
+- Never send unconstrained neural-network output directly to DDS or the BrainCo
+  actuator.
+- Acquire and release `rt/arm_sdk` authority gradually and initialize targets
+  from measured arm position to prevent target discontinuities.
 - Raw telemetry is immutable. Derived signals must be identified as derived.
 - Samples use monotonic receipt timestamps; device clocks are not assumed to be
   synchronized.
@@ -53,8 +156,8 @@ bypass deterministic safety constraints.
   friction.
 - Biometric data remains separate from tactile trajectory data. Identity
   recognition requires a concrete feature, explicit enrollment, and consent.
-- Physical validation proceeds incrementally: offline, dry run, arm-only, open
-  hand, then conservative human contact.
+- Physical validation proceeds incrementally: offline, dry run, arm-only,
+  open hand, nonhuman fixture, then conservative human contact.
 
 ## Milestone status
 
@@ -69,164 +172,125 @@ Implementation does not imply that a physical exit criterion has been met.
 | Hugging Face upload | Initial post-run upload implemented | Verify privacy and idempotence; decide whether a separate durable spool/uploader is required. |
 | Episode validator | Implemented; first baseline complete | Extend with plots and telemetry analysis; decide how rejected data is quarantined. |
 | Depth-gated visual invitation | Interim implementation | It detects depth-gated scene change, not a semantic human hand or hand position. |
+| `rt/arm_sdk` actuator layer | Planned; architecture selected | Implement continuous arm controller modeled on `xr_teleoperate --motion`; validate authority acquisition/release and state feedback. |
+| Bounded deterministic arm oscillation | Planned | Implement only after the arm-SDK actuator passes no-motion and single-motion tests. |
+| Native self-balance with custom arm control | Architecture supported; local validation required | Verify exact G1/firmware behavior with Regular/Motion mode + `rt/arm_sdk` under gantry. |
 | Semantic hand detection and 3D localization | Planned | Prototype and validate in observe-only mode. |
 | Bounded inverse-kinematics approach | Planned | Requires calibrated coordinates, verified limits, target-loss handling, and staged hardware validation. |
-| Bounded hold-state arm oscillation | Planned | Requires trajectory analysis and confirmation of the supported Unitree control mode. |
-| Self-balance validation with gantry | Planned | Requires 2B completion and confirmation that native lower-body stabilization remains active during arm control. |
-| Staged validation without gantry | Planned | Requires reviewed 2C evidence, a defined test envelope, and explicit approval. |
-| Integrated safety supervisor | Planned | Integrate only after both tracks independently meet their exit criteria. |
-| Learning and personalization | Future | Requires validated data, labels, deterministic bounds, and consent controls. |
+| Staged validation without gantry | Planned | Requires reviewed balance/control evidence, a defined test envelope, and explicit approval. |
+| Integrated safety supervisor | Planned | Integrate before learned actions can command hardware. |
+| Learned vision+touch arm/hand policy | Future | Requires validated actuator layer, data, action representation, deterministic bounds, and evaluation protocol. |
 
-## Track 1: Vision and arm tracking
+## Track 1: Custom G1 arm-control substrate
 
-### 1A. Human-hand detection and 3D localization
+### 1A. Implement `rt/arm_sdk` actuator
 
-The existing depth-gated visual invitation is an interim readiness signal. It
-must not be treated as semantic hand detection or as a probability estimate.
+Add a dedicated module, preferably:
 
-Required work:
+```text
+handshake/g1_arm_controller.py
+```
 
-1. Detect a human hand rather than generic scene change.
-2. Fuse the detection with RealSense depth to estimate `(x, y, z)` in camera
-   coordinates.
-3. Calibrate and transform the target into the robot torso/arm frame.
-4. Add confidence gating, temporal filtering, persistence, ambiguity handling,
-   and explicit target-loss behavior.
-5. Measure accuracy, safe range, latency, update rate, jitter, occlusion, and
-   multiple-hand behavior.
-6. Complete validation with overlays and structured logs before commanding
-   robot motion.
+Do not embed the continuous DDS implementation into the already-large
+`controller.py`.
 
-Exit criterion: a human hand is localized reliably within a defined safe
-interaction volume, with uncertainty, ambiguity, staleness, and loss reported
-explicitly.
+The module should own:
 
-### 1B. Bounded inverse-kinematics arm tracking
+1. `rt/arm_sdk` command publishing.
+2. `rt/lowstate` subscription or access to a shared LowState source.
+3. Verified active-arm joint mapping for the installed G1 configuration.
+4. Current arm `q`/`dq` access.
+5. Initialization of command targets from measured joint positions.
+6. Gradual arm-SDK authority ramp from 0 to 1.
+7. Gradual controlled authority release from 1 to 0.
+8. Position, velocity, acceleration, and workspace limits.
+9. High-rate interpolation/filtering of lower-rate targets.
+10. Timeout, stale-state, cancellation, and safe-return behavior.
 
-Required work:
+The existing `ArmActionRunner` and `G1ArmActionClient` remain useful as the
+baseline/reference behavior during migration, but the learned-control path must
+not depend on predefined Unitree actions such as `"shake hand"`.
 
-1. Define a safe end-effector handshake pose relative to the detected hand.
-2. Solve IK within verified joint, velocity, acceleration, workspace, and
-   collision constraints.
-3. Smooth and rate-limit the target and commanded trajectory.
-4. Add target-loss, stale-telemetry, timeout, cancellation, IK-failure, and
-   safe-return paths.
-5. Validate in order: offline solutions and plots, command-only dry run,
-   operator-confirmed arm-only motion, then autonomous tracking.
+Exit criterion: while the robot remains in Regular/Motion Control mode, the
+controller can acquire arm authority without a discontinuity, hold the measured
+pose, execute one tiny bounded arm movement, return, and release authority while
+Unitree continues to own the lower body.
 
-Exit criterion: the arm follows a slowly moving test hand inside the approved
-workspace and returns safely for every tested loss and failure condition.
+### 1B. Deterministic programmable handshake motion
 
-## Track 2: Handshake behavior
+Before introducing a learned arm policy, implement a deterministic trajectory
+through the new actuator.
 
-### 2A. Trajectory validation and analysis
+Required sequence:
 
-Required work:
+```text
+hold measured pose
+      ↓
+move to verified handshake pose
+      ↓
+tactile contact
+      ↓
+small smooth arm oscillation
+      ↓
+stop immediately on release/abort
+      ↓
+open hand
+      ↓
+return/release arm authority
+```
 
-1. Implement an episode validator and run it over all existing JSONL recordings.
-2. Classify episodes as successful, aborted, rejected, or incomplete.
-3. Report stream completeness, rates, timestamp gaps, dropped samples, field
-   ranges, required transitions, and safe-open/arm-release evidence.
-4. Plot tactile signals, commanded and measured finger positions, active-arm
-   joints, estimated torque, and controller states and events.
-5. Publish the telemetry field, rate, unit, and firmware report.
-6. Characterize the current high-level arm action during `hold` and distinguish
-   commanded behavior from human-driven or stationary motion.
-7. Preserve JSONL as immutable raw evidence. Evaluate Parquet only as a derived
-   analysis and training representation.
+Start with the smallest joint set capable of producing a natural handshake.
+Generate smooth sinusoidal or otherwise bounded trajectories offline first.
+Use low amplitude and frequency and increase only after measured tracking and
+balance behavior are understood.
 
-Exit criterion: every existing episode has a reproducible validation result,
-and telemetry quality and active-arm motion are understood well enough to set
-defensible control bounds.
+Record commanded `q_target` separately from measured `q` and `dq`.
 
-### 2B. Bounded hold-state arm oscillation
+Exit criterion: a repeatable subtle oscillation operates only during the
+approved handshake state, tracks its target within defined bounds, stops on all
+abort conditions, and returns safely.
 
-The oscillation must not be implemented by repeatedly invoking the fixed
-high-level `shake hand` action. Custom joint commands must not overlap an
-incompatible high-level controller.
+### 1C. Native balance validation with custom arm control
 
-Prerequisites:
-
-1. Confirm active-arm joint names, indices, units, limits, and state rate.
-2. Characterize the measured trajectory of the high-level action.
-3. Identify the smallest joint set that can produce a natural vertical shake.
-4. Verify the supported control mode and safe transitions into and out of
-   bounded joint control.
-5. Attach the robot to a reviewed, load-rated gantry/fall-arrest system before
-   every physical test in this milestone. Verify attachment, clearance, travel,
-   emergency-stop access, and the exclusion zone before enabling the robot.
-
-Required behavior:
-
-- Generate and plot a smooth, low-amplitude trajectory offline first.
-- Before enabling repeated oscillation, validate one very small, slow movement
-  during `hold`. Stage it as command logging only, arm-only motion, motion with
-  the robotic hand open, and then controlled contact with a nonhuman fixture.
-  Limit it to one bounded movement and return to the verified hold pose. Human
-  contact is deferred to 2D after balance validation.
-- Enforce hard position, velocity, acceleration, torque, pressure, duration,
-  workspace, and telemetry-freshness limits.
-- Stop on tactile release, state exit, excessive pressure or torque, stale data,
-  timeout, cancellation, emergency stop, or command failure.
-- Validate in order: offline trajectory, live command logging, arm-only motion,
-  open robotic hand, one minor movement against a nonhuman fixture, then
-  repeated oscillation at minimum amplitude and duration against that fixture.
-- Run every physical stage with the gantry attached. The gantry must not be
-  treated as evidence that balance control is functioning or as permission to
-  exceed the approved motion and contact envelope.
-
-Exit criterion: a repeatable subtle oscillation operates only during `hold`,
-stops before hand-first release, and cannot interfere with safe arm lowering.
-All physical evidence for this milestone is collected with the gantry attached.
-
-### 2C. Self-balance validation with gantry attached
-
-This milestone verifies that Unitree's native lower-body stabilization and
-recovery behavior remain available while bounded arm control is active. It must
-not rely on the gantry to create or mask a stable result.
+This milestone verifies locally that Unitree's native lower-body stabilization
+remains active and effective while `rt/arm_sdk` controls the arms.
 
 Prerequisites:
 
-1. Complete 2B and review its command, measured-state, abort, and release data.
-2. Confirm the intended standing/balance mode and the documented ownership of
-   legs, waist, and arms for the exact robot model and firmware.
-3. Define conservative torso attitude, angular-rate, foot-contact, joint,
-   torque, workspace, and recovery-step limits.
-4. Use a reviewed, load-rated gantry/fall-arrest setup, a clear exclusion zone,
-   and a dedicated emergency-stop operator.
+1. Complete 1A and initial 1B tests.
+2. Confirm Regular/Motion Control mode on the installed firmware.
+3. Confirm that commands are published only through `rt/arm_sdk`, not
+   whole-body `rt/lowcmd`.
+4. Define conservative torso attitude, angular-rate, foot/contact, arm-command,
+   and recovery-step limits.
+5. Use a reviewed, load-rated gantry/fall-arrest setup, clear exclusion zone,
+   and emergency-stop operator.
 
-Required behavior:
+Required tests:
 
-- Keep leg control under Unitree's native balance controller. Keep the waist
-  under native control unless separate ownership is explicitly documented and
-  approved.
-- Begin with no-contact standing trials, then use a controlled nonhuman fixture
-  to apply small, repeatable disturbances inside an approved envelope.
-- Compare native balance behavior with arm-SDK authority disabled and enabled,
-  including the bounded movement and the frozen/non-participating joint policy.
-- Record torso motion, foot/contact state where available, lower-body joint
-  response, locomotion or balance mode, arm commands, authority weight, and any
-  recovery step or controller transition.
-- On instability, unexpected stepping, loss of foot contact, limit violation,
-  stale telemetry, or balance-mode change, cancel the handshake motion and
-  transfer arm authority through the verified controlled-release path.
-- Do not use a person to generate the balance disturbance during this
-  milestone.
+- native standing with arm-SDK authority at zero;
+- arm-SDK enabled while commanding the measured pose only;
+- one minimum-amplitude arm movement;
+- bounded repeated arm oscillation;
+- controlled nonhuman contact/disturbance within an approved envelope;
+- cancellation and authority release during each stage.
+
+Record torso/IMU state, available foot/contact state, lower-body joint response,
+arm targets, arm measured state, authority weight, and controller transitions.
 
 Exit criterion: with the gantry slack and non-load-bearing during nominal
-trials, the native controller demonstrates repeatable stabilization or bounded
-recovery while arm control is active; arm cancellation and authority release
-remain controlled in every tested balance event; and the reviewed telemetry
-shows no unsafe interference from frozen or commanded upper-body joints.
+trials, native stabilization or bounded recovery remains repeatable while
+custom arm control is active, and cancellation/authority release remains
+controlled in every tested event.
 
-### 2D. Staged validation without gantry
+### 1D. Staged validation without gantry
 
 Removing the gantry is a separate approval gate, not an automatic continuation
-of 2C.
+of 1C.
 
 Prerequisites:
 
-1. Complete and review the 2C exit evidence.
+1. Complete and review the 1C exit evidence.
 2. Resolve every unexplained balance, stepping, controller-ownership, command,
    release, or telemetry anomaly.
 3. Define a smaller initial motion and disturbance envelope, test surface,
@@ -249,29 +313,182 @@ conflict, or uncontrolled arm-authority transition. Any failure returns the
 program to gantry-attached testing and closes the without-gantry gate pending
 review.
 
-## Track integration
+## Track 2: Vision-guided approach
 
-Integrate only after both tracks independently satisfy their exit criteria:
+### 2A. Human-hand detection and 3D localization
+
+The existing depth-gated visual invitation is an interim readiness signal. It
+must not be treated as semantic hand detection or as a probability estimate.
+
+Required work:
+
+1. Detect a human hand rather than generic scene change.
+2. Fuse detection with RealSense depth to estimate `(x, y, z)` in camera
+   coordinates.
+3. Calibrate and transform the target into the robot torso/arm frame.
+4. Add confidence gating, temporal filtering, persistence, ambiguity handling,
+   and explicit target-loss behavior.
+5. Measure accuracy, safe range, latency, update rate, jitter, occlusion, and
+   multiple-hand behavior.
+6. Complete validation with overlays and structured logs before commanding
+   robot motion.
+
+Exit criterion: a human hand is localized reliably within a defined safe
+interaction volume, with uncertainty, ambiguity, staleness, and loss reported
+explicitly.
+
+### 2B. Bounded inverse-kinematics approach
+
+Required work:
+
+1. Define a safe end-effector handshake pose relative to the detected hand.
+2. Solve IK within verified joint, velocity, acceleration, workspace, and
+   collision constraints.
+3. Feed resulting joint targets through the same `rt/arm_sdk` safety and
+   interpolation layer used by deterministic trajectories.
+4. Add target-loss, stale-telemetry, timeout, cancellation, IK-failure, and
+   safe-return paths.
+5. Validate in order: offline solutions and plots, command-only dry run,
+   operator-confirmed arm-only motion, then autonomous tracking.
+
+Exit criterion: the arm follows a slowly moving test hand inside the approved
+workspace and returns safely for every tested loss and failure condition.
+
+## Track 3: Tactile handshake and data
+
+### 3A. Trajectory validation and analysis
+
+Required work:
+
+1. Run the episode validator over all existing JSONL recordings.
+2. Classify episodes as successful, aborted, rejected, or incomplete.
+3. Report stream completeness, rates, timestamp gaps, dropped samples, field
+   ranges, required transitions, and safe-open/arm-release evidence.
+4. Plot tactile signals, commanded and measured finger positions, active-arm
+   joints, estimated torque, and controller states and events.
+5. Publish the telemetry field, rate, unit, and firmware report.
+6. Characterize the current high-level Unitree `shake hand` action as a baseline
+   but do not treat its opaque trajectory as the future policy actuator.
+7. Preserve JSONL as immutable raw evidence. Evaluate Parquet only as a derived
+   analysis and training representation.
+
+Exit criterion: every existing episode has a reproducible validation result,
+and telemetry quality and active-arm motion are understood well enough to set
+defensible control bounds.
+
+### 3B. Extend recording for custom/policy arm control
+
+For each active trajectory, record at minimum:
 
 ```text
-detect hand -> estimate XYZ -> bounded IK approach -> tactile contact
--> controlled closing -> bounded hold oscillation -> open hand
--> safe arm return
+policy/trajectory target arm q
+measured arm q and dq
+arm-SDK authority weight
+BrainCo hand command and measured state
+raw tactile observations
+vision observation/state
+IMU/body state
+observation timestamp
+policy inference timestamp
+command timestamp
+controller state/events
 ```
 
-Vision governs approach and readiness. The tactile state machine governs grasp,
-hold, and release. A shared safety supervisor may stop either subsystem, and
-neither subsystem may bypass it.
+Keep commanded and measured quantities distinct. Record policy/model identity,
+configuration, and action-filter version as episode metadata once learned
+components are introduced.
+
+Exit criterion: actuator tracking error, observation-to-action latency, policy
+latency, tactile response, and body response can be reconstructed for every
+accepted episode.
+
+## Track 4: Learned vision+touch policy
+
+Learning begins only after the deterministic actuator and safety substrate are
+validated.
+
+### Observation space
+
+Candidate observations are:
+
+```text
+camera image/features
+BrainCo tactile state
+BrainCo measured finger positions
+G1 arm q/dq
+optional IMU/body state
+behavioral state / previous action
+```
+
+### Action space
+
+Start with bounded position targets:
+
+```text
+G1 arm joint q_target
+BrainCo finger position targets
+```
+
+Do not initially learn `kp`, `kd`, feed-forward torque, whole-body joints, or
+balance commands.
+
+The learned policy may run at a lower rate than the arm command loop. A
+deterministic actuator layer performs interpolation, rate limiting, clipping,
+and stale-action handling.
+
+### Learning sequence
+
+1. Use deterministic trajectories to establish safe control bounds and collect
+   richer active-handshake data.
+2. Evaluate contact-state and interaction-state estimation offline.
+3. Evaluate comfort/pressure prediction and handshake-quality metrics.
+4. Train/evaluate bounded next-hand and arm target prediction offline.
+5. Shadow mode: run policy inference live but record proposed actions without
+   executing them.
+6. Execute policy actions only through deterministic constraints and only in a
+   restricted interaction state/workspace.
+7. Expand action authority gradually based on measured evidence.
+
+End-to-end unconstrained arm control, learned whole-body control, and learned
+balance control are out of scope for the initial work.
+
+## Integrated runtime behavior
+
+After the independent tracks meet their exit criteria, the target interaction
+is:
+
+```text
+detect/localize hand
+        ↓
+bounded approach through IK or learned target proposal
+        ↓
+tactile contact
+        ↓
+controlled BrainCo closing
+        ↓
+bounded learned/deterministic arm-hand interaction
+        ↓
+open hand
+        ↓
+safe arm return and authority release
+```
+
+Vision governs approach and readiness. Tactile state governs contact, grasp,
+and release. The learned policy proposes movement only inside approved states
+and bounds. A shared safety supervisor may stop any subsystem, and no learned
+component may bypass it.
 
 Integration exit criteria:
 
 - Every active state can transition to safe return.
-- Loss, ambiguity, stale telemetry, timeout, cancellation, and command failure
-  are tested across subsystem boundaries.
-- Recording, upload, speech, and perception failures do not prevent safe hand
-  opening or arm return.
+- Loss, ambiguity, stale telemetry, timeout, cancellation, command failure, and
+  model failure are tested across subsystem boundaries.
+- Recording, upload, speech, perception, and model-inference failures do not
+  prevent safe hand opening or arm return.
 - Operator cancellation and emergency stop remain available throughout the
   interaction.
+- Unitree lower-body balance remains under the native motion controller during
+  normal policy operation.
 
 ## Data, evaluation, and learning milestones
 
@@ -282,11 +499,12 @@ Integration exit criteria:
 - Keep credentials outside source control and verify dataset visibility before
   uploading participant data.
 - Do not upload raw faces, names, voices, or biometric embeddings with tactile
-  trajectories.
-- Collect 50 validated local episodes before treating the recording format as
-  stable.
-- Collect 300–500 carefully labeled episodes before deciding whether the data
-  supports learned control.
+  trajectories unless separately approved.
+- Collect at least 50 validated local episodes before treating the recording
+  format as stable.
+- Do not choose a larger learning target solely by episode count; decide based
+  on behavioral diversity, participant/session coverage, action diversity, and
+  validation performance.
 - Split train, validation, and test data by participant and recording session,
   not randomly by frame.
 
@@ -296,18 +514,20 @@ Candidate post-episode labels are comfort, grip firmness, arm-motion quality,
 successful contact, unexpected behavior, and an optional note. The operator
 interface and consent/retention policy remain unresolved.
 
-### Learning sequence
+### Policy evaluation
 
-1. Compare a contact-state estimator with the deterministic threshold state
-   machine without deploying it as the safety authority.
-2. Evaluate comfort and pressure prediction.
-3. Evaluate a bounded next-hand command that can only make small close, hold,
-   or open decisions through deterministic constraints.
-4. Consider bounded timing and amplitude adaptation of a fixed, verified arm
-   trajectory only after hand models are reliable.
+Evaluate at least:
 
-End-to-end unconstrained arm control is out of scope for the initial learning
-work.
+- task success;
+- contact acquisition and release quality;
+- pressure/comfort violations;
+- arm tracking error;
+- action smoothness and rate-limit activation;
+- observation-to-action latency;
+- model inference latency and stale-action frequency;
+- body attitude/balance response;
+- abort frequency and safe-return success;
+- generalization by participant and session.
 
 ## Optional identity-based personalization
 
@@ -326,17 +546,20 @@ Add it only for a concrete personalization feature, with:
 | Decision | Current direction | Status |
 |---|---|---|
 | Hand side for first dataset | Right hand only | Open |
-| Initial recording threshold | 50 validated local episodes | Proposed |
-| Larger collection target | 300–500 labeled episodes | Proposed |
+| Initial recording threshold | 50 validated local episodes before schema freeze | Proposed |
+| Larger collection target | Decide from diversity and validation needs, not a fixed count alone | Open |
 | Immutable raw format | Current JSONL schema | Implemented; validation open |
 | Derived numeric format | Evaluate Parquet after validator work | Proposed |
 | Standard training format | Convert a stable schema to LeRobot v3 | Proposed |
 | Dataset visibility | Private until policies are settled | Must verify |
 | Upload architecture | Post-run upload exists; durable spool is under consideration | Open |
-| Camera storage | No images in the initial trajectory dataset | Proposed |
+| Camera storage | Decide before vision-policy training; current tactile dataset may remain image-free | Open |
 | Identity capability | Hand detection before optional identity recognition | Proposed |
-| First ML task | Contact state and comfort/pressure prediction | Proposed |
-| Arm control | Fixed high-level action before bounded adaptation | Proposed |
+| First learned motor action | Bounded arm `q_target` + BrainCo finger targets | Proposed |
+| Arm control runtime | Regular/Motion mode + `rt/arm_sdk` | Selected; local validation required |
+| Whole-body `rt/lowcmd` | Not used for normal learned-policy runtime | Selected |
+| Waist control | Leave native initially | Selected; revisit only with evidence |
+| Learned torque/gains | Out of scope initially | Selected |
 
 ## Open technical questions
 
@@ -344,20 +567,46 @@ Add it only for a concrete personalization feature, with:
   firmware?
 - At what rate can tactile and motor state be read concurrently without serial
   timeouts?
-- Which Unitree state and command interfaces are supported in the robot's
-  current operating mode?
-- Does estimated arm torque remain meaningful while the high-level action
-  service is active?
-- What are the verified active-arm and torso joint indices and limits?
-- What preparation pose is safest on the installed firmware?
+- What are the exact verified arm joint indices, limits, and available wrist
+  DOFs for the installed G1 configuration?
+- What `kp`/`kd` values and command rate are appropriate for conservative
+  `rt/arm_sdk` position control on this robot/firmware?
+- How should arm-SDK authority ramping behave during normal acquisition,
+  cancellation, and failure recovery?
+- What preparation/handshake pose is safest on the installed firmware?
+- Which subset of arm joints produces the most natural low-disturbance shake?
+- How much lower-body compensation is observed for increasingly dynamic arm
+  trajectories while remaining within the approved envelope?
 - What localization accuracy and sampling rate are required for a safe approach?
+- Should the first learned action be joint-space targets, Cartesian deltas plus
+  deterministic IK, or an action chunk in joint space?
+- What observation history/chunk length is appropriate for tactile handshake
+  dynamics?
 - Should raw and processed datasets share a repository?
 - What participant consent, retention, deletion, and licensing policies apply?
 - What operator interface will collect quality labels and emergency input?
 
+## Immediate next implementation steps
+
+1. Add `handshake/g1_arm_controller.py` based on the control pattern used by
+   Unitree `xr_teleoperate` in motion mode.
+2. Validate read-only joint mapping and current arm state from `rt/lowstate`.
+3. Add arm-SDK authority acquisition/release with targets initialized from
+   measured joint positions.
+4. Test hold-only control with no commanded motion.
+5. Test one tiny, slow, bounded arm movement under gantry.
+6. Implement a deterministic low-amplitude handshake oscillation.
+7. Extend recording to capture arm targets, actual arm state, authority weight,
+   and timing.
+8. Validate native lower-body balance while custom arm control is active.
+9. Only then connect vision/touch policy outputs to the new actuator layer.
+
 ## References
 
 - [BrainCo RevoHand SDK examples](https://github.com/BrainCoTech/brainco-hand-sdk)
+- [Unitree G1 developer documentation](https://support.unitree.com/home/en/G1_developer)
 - [Unitree SDK2 Python](https://github.com/unitreerobotics/unitree_sdk2_python)
+- [Unitree XR Teleoperate](https://github.com/unitreerobotics/xr_teleoperate)
+- [XR Teleoperate motion-control notes](https://github.com/unitreerobotics/xr_teleoperate/wiki/Motion)
 - [Hugging Face upload guide](https://huggingface.co/docs/huggingface_hub/guides/upload)
 - [LeRobot Dataset v3](https://huggingface.co/docs/lerobot/main/lerobot-dataset-v3)
