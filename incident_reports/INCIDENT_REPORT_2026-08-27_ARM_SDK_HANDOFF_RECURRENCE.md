@@ -57,6 +57,10 @@ File sizes:
 Both recordings reported zero dropped telemetry samples and no recorder write
 error.
 
+Full locally authored incident-code snapshots, SHA-256 manifests, external SDK
+provenance, relevant source excerpts, and compact per-run traces are preserved
+under [`2026-08-27/`](2026-08-27/README.md).
+
 ## Preconditions that passed
 
 The tests incorporated the principal software mitigations from the first

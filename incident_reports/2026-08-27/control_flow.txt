@@ -1,0 +1,64 @@
+EXACT RELEVANT SOURCE EXCERPTS
+Source identities are recorded in README.md.
+
+g1_standalone_arm_sequence.py — publisher construction and command fields:
+
+    self.publisher = ChannelPublisher("rt/arm_sdk", LowCmd_)
+    self.publisher.Init()
+
+    self.command.motor_cmd[29].q = weight
+    for index in ARM_JOINT_INDICES:
+        motor = self.command.motor_cmd[index]
+        motor.mode = 1
+        motor.tau = 0.0
+        motor.q = positions[index]
+        motor.dq = velocities[index]
+        motor.kp, motor.kd = arm_sdk_gains(index)
+    self.command.crc = self.crc.Crc(self.command)
+    self.publisher.Write(self.command)
+
+g1_standalone_arm_sequence.py — unsafe cross-controller sequence:
+
+    ret = actions.execute_raise()
+    require_rpc_success_or_defer_timeout(...)
+    settled_state = wait_for_settled_state(...)
+    require_arm_displacement(settled_state, pre_action_pose, ...)
+    sink = ArmSdkCommandSink()
+    executor = BoundedArmExecutor(..., publish_commands=True)
+    outcome, arm_reason = executor.run(settled_state)
+
+    # finally
+    ret = actions.execute_release()
+    require_rpc_success_or_defer_timeout(...)
+    wait_for_settled_state(...)
+
+handshake/standalone_arm.py — blend-in and trajectory transition:
+
+    positions, _, _ = self._fresh_vectors()
+    if elapsed < self.plan.blend_seconds:
+        phase = "blend_in"
+        weight = elapsed / self.plan.blend_seconds
+        targets = list(positions)
+    elif elapsed < self.plan.blend_seconds + self.plan.duration_seconds:
+        phase = "trajectory"
+        targets = list(base)
+        targets[RIGHT_ELBOW_INDEX] += offset
+        weight = 1.0
+    targets = self._clip_targets(targets, positions)
+    self._command(targets, [0.0] * len(targets), weight, phase)
+
+handshake/standalone_arm.py — abort release:
+
+    initial_weight = self.authority_weight
+    while True:
+        positions, _, _ = self._fresh_vectors()
+        targets = self._clip_targets(self.last_positions, positions)
+        self._command(
+            targets,
+            [0.0] * len(targets),
+            initial_weight * (1.0 - fraction),
+            "abort_release",
+        )
+
+These excerpts document the failed implementation; they are not approved
+instructions for robot operation.

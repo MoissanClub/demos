@@ -33,6 +33,9 @@ the corrective actions in this report are implemented and reviewed.
 The source evidence is the local trajectory file under
 `telemetry/trajectories/20260821T164545Z/`. Raw telemetry is intentionally not
 committed because it contains device identifiers and high-volume hardware data.
+Compact traces, source-provenance limitations, and a non-executable
+evidence-grounded control-flow reconstruction are preserved under
+[`2026-08-22/`](2026-08-22/README.md).
 
 Times below are relative to the trajectory start.
 

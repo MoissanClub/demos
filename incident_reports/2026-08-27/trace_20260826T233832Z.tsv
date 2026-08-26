@@ -1,0 +1,12 @@
+relative_seconds	event	authority_weight	commanded_elbow_rad	measured_elbow_rad	measured_elbow_velocity_rad_s	details
+-0.769	high_level_raise_returned					return_value=0
+-0.248	settled			0.1832	0.000	duration_seconds=0.519
+0.000	movement_started	0.000	0.1832	0.1832	0.003	published=true
+0.404	blend_in	0.801	0.1832	0.1832	0.006	arm remained near command
+0.408	authority_release_started	0.810	0.1832			state-limit abort
+0.446	abort_release	0.760	0.1832	0.2372	7.115	command/measured divergence
+0.493	abort_release	0.681	0.1832	0.3344	12.390	continued divergence
+0.556	abort_release	0.578	0.1832	0.9040	1.282	large position departure
+0.917	authority_release_finished	0.000	0.1832			weight_zero
+2.362	high_level_release_returned					return_value=0
+2.960	safe_return_settled					duration_seconds=0.511

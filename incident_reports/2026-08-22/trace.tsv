@@ -1,0 +1,6 @@
+relative_seconds	stream	event	details
+0.000000	controller.event	minor_arm_movement_waiting_for_arm_raise	{"action":"shake hand"}
+0.004932	controller.event	minor_arm_movement_started	{"start_delay_seconds":0.5}
+0.009953	controller.event	minor_arm_movement_released_after_arm_raise	{}
+0.172742	controller.event	minor_arm_movement_finished	{"outcome":"aborted","reason":"right elbow velocity limit exceeded (13.135rad/s)"}
+5.175163	trajectory.summary	trajectory.summary	{"trajectory_id":"39104975-0ad0-4c26-b246-4ebc69346862","result":"success","reason":"hand_open_confirmed","dropped_samples_total":0}

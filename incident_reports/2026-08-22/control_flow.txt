@@ -1,0 +1,22 @@
+NON-EXECUTABLE RECONSTRUCTION — NOT AN EXACT SOURCE SNAPSHOT
+
+Evidence-grounded control flow of the unavailable working-tree implementation:
+
+1. Request Unitree high-level `shake hand`.
+2. Treat RPC completion/time guard as permission for fine movement.
+3. Capture one current LowState sample while the arm is still moving.
+4. Create an `rt/arm_sdk` LowCmd publisher.
+5. For joints 15 through 28:
+   - target q = the single captured position;
+   - target dq = 0;
+   - feed-forward torque = 0;
+   - kp = 30;
+   - kd = 1.5.
+6. Add a 0.02 rad right-elbow out-and-back target.
+7. Increase arm-SDK authority.
+8. Abort when measured right-elbow velocity reaches 13.135 rad/s.
+9. Immediately publish authority weight zero.
+
+The exact statement ordering, class names, and exception implementation are
+not recoverable. See the incident report for the evidence supporting each
+reconstructed operation.
