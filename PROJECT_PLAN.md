@@ -65,6 +65,23 @@ This follows the split-control pattern demonstrated by Unitree's
 `xr_teleoperate --motion` path: custom arm control coexists with the native
 lower-body motion controller.
 
+Handshake motion uses complementary representations at different layers:
+
+```text
+6D Cartesian hand-pose intent
+        ↓
+constrained, posture-aware IK
+        ↓
+smooth bounded joint trajectory
+        ↓
+joint PD + bounded Pinocchio RNEA feedforward
+        ↓
+rt/arm_sdk
+```
+
+Explicit reviewed joint-space poses remain authoritative for acquisition,
+initial hold, return, abort, and recovery.
+
 The intended development sequence is deliberately incremental. The high-level
 Unitree handshake action remains characterization evidence only; it must never
 be used as the source state for an `rt/arm_sdk` takeover:
@@ -109,7 +126,8 @@ The custom arm actuator should support:
 
 - joint position targets `q`;
 - optional joint velocity targets `dq`;
-- feed-forward torque `tau` only after separate validation;
+- bounded model-based feed-forward torque `tau` after separate offline and
+  compensated zero-offset validation;
 - conservative, explicit `kp` and `kd` gains;
 - arm-SDK authority/blending weight with gradual acquisition and release;
 - current arm state from `rt/lowstate`;
@@ -118,9 +136,10 @@ The custom arm actuator should support:
 - controlled cancellation and safe return/release behavior.
 
 Initial policy deployment should use position-dominant control: learned or
-heuristic `q_target`, zero desired velocity, zero feed-forward torque, and
-fixed conservative gains. Learned torque control is out of scope for the first
-policy.
+heuristic `q_target`, zero desired velocity, fixed conservative gains, and
+validated model-based feedforward. Feedforward is computed by Pinocchio RNEA
+in the deterministic actuator layer; it is not a learned policy output. Learned
+torque control remains out of scope for the first policy.
 
 ### Control-rate separation
 
@@ -181,11 +200,11 @@ Implementation does not imply that a physical exit criterion has been met.
 | Hugging Face upload | Initial post-run upload implemented | Verify privacy and idempotence; decide whether a separate durable spool/uploader is required. |
 | Episode validator | Implemented; first baseline complete | Extend with plots and telemetry analysis; decide how rejected data is quarantined. |
 | Depth-gated visual invitation | Interim implementation | It detects depth-gated scene change, not a semantic human hand or hand position. |
-| `rt/arm_sdk` actuator layer | Redesign required; physical publication suspended | Hard-disable the failed cross-controller handoff, then implement a continuous controller modeled on `xr_teleoperate --motion` and restart offline validation. |
-| Full deterministic arm raise/shake/return | Planned | One arm-SDK session owns every arm phase; implement only after ownership, no-motion acquisition, cancellation, and recovery are reviewed. |
+| `rt/arm_sdk` actuator layer | Continuous authority cycle demonstrated; compensated validation pending | Add bounded Pinocchio RNEA feedforward and validate a compensated zero-offset authority cycle before reviewing any raise candidate. |
+| Full deterministic arm raise/shake/return | Planned; raise paused | One arm-SDK session owns every arm phase; begin only after compensated zero-offset motion, torque, FSM transition, and release behavior are accepted. |
 | Native self-balance with custom arm control | Architecture supported; local validation required | Verify exact G1/firmware behavior with Regular/Motion mode + `rt/arm_sdk` under gantry. |
 | Semantic hand detection and 3D localization | Planned | Prototype and validate in observe-only mode. |
-| Bounded inverse-kinematics approach | Planned | Requires calibrated coordinates, verified limits, target-loss handling, and staged hardware validation. |
+| Bounded inverse-kinematics approach | Architecture selected; implementation deferred | Use 6D Cartesian intent, constrained posture-aware IK, and a smooth bounded joint trajectory after compensated zero-offset arm control passes. |
 | Staged validation without gantry | Planned | Requires reviewed balance/control evidence, a defined test envelope, and explicit approval. |
 | Integrated safety supervisor | Planned | Integrate before learned actions can command hardware. |
 | Learned vision+touch arm/hand policy | Future | Requires validated actuator layer, data, action representation, deterministic bounds, and evaluation protocol. |
@@ -223,6 +242,39 @@ The module should own:
 The existing `ArmActionRunner` and `G1ArmActionClient` remain useful only as
 baseline/reference behavior. The arm-SDK path must neither invoke nor overlap
 predefined Unitree actions such as `"shake hand"` or `"release arm"`.
+
+Authority-only tests on 2026-08-27 established this observed transition on the
+current robot and firmware:
+
+```text
+(FSM 501, mode 0) -> arm-SDK authority -> (FSM 501, mode 1)
+-> authority weight 0 -> verified (FSM 501, mode 0)
+```
+
+Mode 1 is accepted while arm-SDK authority is active. Release is not complete
+until mode 0 is observed again. These empirical meanings must not be assumed
+for other firmware without verification.
+
+Three successful zero-offset authority cycles produced small, repeatable joint
+motion. With `tau = 0`, PD position error must supply the torque needed to hold
+against gravity; this is the leading explanation. Unitree's official
+`xr_teleoperate` G1 path supplies Pinocchio RNEA output to the arm controller.
+Use the checked-out, robot-matched model with verified joint mapping and torque
+signs, finite-value checks, conservative per-joint bounds, authority-consistent
+blending, and command telemetry. Raw estimated/measured torque is not an
+approved substitute for model-based feedforward.
+
+Before any raise candidate, validate in this order:
+
+1. Verify model configuration, 14-joint ordering, RNEA signs, and bounds
+   offline, including NaN, mapping, stale-state, and model-load failures.
+2. Generate and review every position and feedforward-torque command for a
+   compensated zero-offset acquire/hold/release cycle without publishing.
+3. Run a newly approved gantry-attached compensated zero-offset cycle and
+   compare its joint motion, torque, FSM transition, and release against the
+   three uncompensated baselines.
+4. Review a minimum-amplitude raise only after the compensated results are
+   repeatable and accepted.
 
 Exit criterion: while the robot remains in Regular/Motion Control mode, the
 controller can acquire arm authority without a discontinuity, hold the measured
@@ -348,19 +400,31 @@ Exit criterion: a human hand is localized reliably within a defined safe
 interaction volume, with uncertainty, ambiguity, staleness, and loss reported
 explicitly.
 
-### 2B. Bounded inverse-kinematics approach
+### 2B. Cartesian intent and bounded inverse-kinematics approach
+
+Cartesian and joint-space control are complementary layers, not alternatives.
+The interaction layer specifies a 6D target (position and orientation) relative
+to the detected hand. Three-dimensional position alone cannot define palm
+orientation or a natural elbow and wrist posture. Constrained IK converts the
+target into joint positions, and the deterministic actuator executes them with
+joint PD and model-based feedforward.
 
 Required work:
 
-1. Define a safe end-effector handshake pose relative to the detected hand.
+1. Define a safe 6D end-effector handshake pose relative to the detected hand,
+   including approach direction, palm orientation, and standoff distance.
 2. Solve IK within verified joint, velocity, acceleration, workspace, and
-   collision constraints.
-3. Feed resulting joint targets through the same `rt/arm_sdk` safety and
-   interpolation layer used by deterministic trajectories.
+   collision constraints, with secondary objectives for joint-limit margin,
+   preferred elbow/wrist posture, self-collision, and continuity from the
+   previous solution.
+3. Convert IK output into a smooth time-parameterized joint trajectory; do not
+   publish raw per-frame IK solutions. Feed the trajectory through the same
+   `rt/arm_sdk` safety and interpolation layer used by deterministic motion.
 4. Add target-loss, stale-telemetry, timeout, cancellation, IK-failure, and
    safe-return paths.
-5. Validate in order: offline solutions and plots, command-only dry run,
-   operator-confirmed arm-only motion, then autonomous tracking.
+5. Validate in order: offline solutions and plots, recorded-target replay,
+   command-only dry run, operator-confirmed arm-only motion, then autonomous
+   tracking.
 
 Exit criterion: the arm follows a slowly moving test hand inside the approved
 workspace and returns safely for every tested loss and failure condition.
@@ -568,6 +632,8 @@ Add it only for a concrete personalization feature, with:
 | Identity capability | Hand detection before optional identity recognition | Proposed |
 | First learned motor action | Bounded arm `q_target` + BrainCo finger targets | Proposed |
 | Arm control runtime | Regular/Motion mode + `rt/arm_sdk` | Selected; local validation required |
+| Handshake motion representation | 6D Cartesian intent -> constrained posture-aware IK -> smooth bounded joint trajectory | Selected |
+| Low-level arm control | Joint PD + bounded Pinocchio RNEA feedforward | Selected; compensated validation pending |
 | Whole-body `rt/lowcmd` | Not used for normal learned-policy runtime | Selected |
 | Waist control | Leave native initially | Selected; revisit only with evidence |
 | Learned torque/gains | Out of scope initially | Selected |
@@ -589,8 +655,14 @@ Add it only for a concrete personalization feature, with:
 - How much lower-body compensation is observed for increasingly dynamic arm
   trajectories while remaining within the approved envelope?
 - What localization accuracy and sampling rate are required for a safe approach?
-- Should the first learned action be joint-space targets, Cartesian deltas plus
-  deterministic IK, or an action chunk in joint space?
+- What conservative per-joint feedforward-torque bounds and blend schedule hold
+  the initial pose without inducing a control transient?
+- Does the checked-out Pinocchio model and joint ordering exactly match this G1
+  hardware and firmware configuration?
+- What 6D handshake-pose convention and secondary IK objectives produce a
+  natural elbow and wrist posture across the approved interaction volume?
+- Should the first learned action be Cartesian deltas through deterministic IK
+  or bounded joint-space action chunks after the approach phase?
 - What observation history/chunk length is appropriate for tactile handshake
   dynamics?
 - Should raw and processed datasets share a repository?
@@ -599,25 +671,22 @@ Add it only for a concrete personalization feature, with:
 
 ## Immediate next implementation steps
 
-1. Hard-disable the preserved `ExecuteAction`-to-arm-SDK publication path; keep
-   its code and traces available only under the incident report.
-2. Confirm from Unitree documentation the exact controller ownership, FSM
-   prerequisites, arm command-field semantics, and supported recovery behavior
-   for this robot and firmware.
-3. Add offline tests for a full acquire/raise/settle/shake/return/settle/release
-   state machine, including failure injection and abort from every phase.
-4. Generate and review the complete bounded trajectory and command stream with
-   no DDS publisher.
-5. Add `handshake/g1_arm_controller.py` based on the control pattern used by
-   Unitree `xr_teleoperate` in motion mode, with a fixed initial target during
-   authority acquisition.
-6. Extend recording to capture every phase, arm target, measured arm and lower
-   body state, authority weight, limit decision, cancellation, and timing.
-7. Write a new staged physical-test plan beginning with no-motion authority
-   acquisition and return under the reviewed gantry. Physical publication stays
-   suspended until that plan receives explicit approval.
-8. Validate one minimum-amplitude arm-SDK raise and return before adding shake.
-9. Validate the full deterministic arm-SDK raise/shake/return/release sequence,
+1. Reuse the checked-out `xr_teleoperate` G1 Pinocchio model to compute RNEA
+   feedforward, after verifying model variant, configuration mapping, joint
+   order, and torque signs for the 14 controlled arm joints.
+2. Extend the continuous arm controller and publisher for 14 finite, bounded
+   feedforward torques blended consistently with arm-SDK authority.
+3. Add offline mapping, limit, command-generation, and failure-injection tests;
+   then review a command-only compensated zero-offset acquire/hold/release run.
+4. Prepare a new gantry-attached compensated zero-offset test for explicit
+   approval; do not run a raise candidate yet.
+5. Compare compensated joint motion and authority release against the three
+   successful uncompensated zero-offset baselines.
+6. Extend recording to capture every phase, arm target, feedforward torque,
+   measured arm and lower-body state, authority weight, limit decision,
+   cancellation, and timing.
+7. Validate one minimum-amplitude arm-SDK raise and return before adding shake.
+8. Validate the full deterministic arm-SDK raise/shake/return/release sequence,
    then native lower-body balance, before adding hand, touch, vision, or policy
    outputs.
 
