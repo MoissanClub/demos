@@ -65,14 +65,18 @@ This follows the split-control pattern demonstrated by Unitree's
 `xr_teleoperate --motion` path: custom arm control coexists with the native
 lower-body motion controller.
 
-The intended development sequence is deliberately incremental:
+The intended development sequence is deliberately incremental. The high-level
+Unitree handshake action remains characterization evidence only; it must never
+be used as the source state for an `rt/arm_sdk` takeover:
 
 ```text
-existing high-level Unitree handshake action
+measured arm pose in Regular/Motion mode, with no high-level arm action active
                 ↓
-custom rt/arm_sdk actuator with no learned policy
+continuous rt/arm_sdk authority acquisition at one fixed reviewed pose
                 ↓
-bounded deterministic arm trajectory
+full arm-SDK raise -> bounded shake -> return -> controlled release
+                ↓
+deterministic BrainCo hand integration with a nonhuman fixture
                 ↓
 vision-guided approach + tactile handshake
                 ↓
@@ -147,8 +151,13 @@ updates and rejects stale targets.
   pressure, torque, temperature, workspace, timeout, and stale-data limits.
 - Never send unconstrained neural-network output directly to DDS or the BrainCo
   actuator.
-- Acquire and release `rt/arm_sdk` authority gradually and initialize targets
-  from measured arm position to prevent target discontinuities.
+- Acquire and release `rt/arm_sdk` authority gradually. Capture the initial
+  measured pose before acquisition and hold that fixed target during blend-in;
+  do not chase the changing measured position.
+- Never transition directly from `ExecuteAction("shake hand")`, `release arm`,
+  or a legacy sport handshake task into `rt/arm_sdk`. Two gantry-attached tests
+  on 2026-08-27 produced sudden arm drops despite RPC completion, measured
+  settling, target continuity, command clipping, and authority blending.
 - Raw telemetry is immutable. Derived signals must be identified as derived.
 - Samples use monotonic receipt timestamps; device clocks are not assumed to be
   synchronized.
@@ -172,8 +181,8 @@ Implementation does not imply that a physical exit criterion has been met.
 | Hugging Face upload | Initial post-run upload implemented | Verify privacy and idempotence; decide whether a separate durable spool/uploader is required. |
 | Episode validator | Implemented; first baseline complete | Extend with plots and telemetry analysis; decide how rejected data is quarantined. |
 | Depth-gated visual invitation | Interim implementation | It detects depth-gated scene change, not a semantic human hand or hand position. |
-| `rt/arm_sdk` actuator layer | Planned; architecture selected | Implement continuous arm controller modeled on `xr_teleoperate --motion`; validate authority acquisition/release and state feedback. |
-| Bounded deterministic arm oscillation | Planned | Implement only after the arm-SDK actuator passes no-motion and single-motion tests. |
+| `rt/arm_sdk` actuator layer | Redesign required; physical publication suspended | Hard-disable the failed cross-controller handoff, then implement a continuous controller modeled on `xr_teleoperate --motion` and restart offline validation. |
+| Full deterministic arm raise/shake/return | Planned | One arm-SDK session owns every arm phase; implement only after ownership, no-motion acquisition, cancellation, and recovery are reviewed. |
 | Native self-balance with custom arm control | Architecture supported; local validation required | Verify exact G1/firmware behavior with Regular/Motion mode + `rt/arm_sdk` under gantry. |
 | Semantic hand detection and 3D localization | Planned | Prototype and validate in observe-only mode. |
 | Bounded inverse-kinematics approach | Planned | Requires calibrated coordinates, verified limits, target-loss handling, and staged hardware validation. |
@@ -200,16 +209,20 @@ The module should own:
 2. `rt/lowstate` subscription or access to a shared LowState source.
 3. Verified active-arm joint mapping for the installed G1 configuration.
 4. Current arm `q`/`dq` access.
-5. Initialization of command targets from measured joint positions.
+5. Capture of a fixed initial target from measured joint positions before
+   authority acquisition; the target must not track measured motion during the
+   blend.
 6. Gradual arm-SDK authority ramp from 0 to 1.
 7. Gradual controlled authority release from 1 to 0.
 8. Position, velocity, acceleration, and workspace limits.
 9. High-rate interpolation/filtering of lower-rate targets.
 10. Timeout, stale-state, cancellation, and safe-return behavior.
+11. An explicit phase machine for acquire, raise, settle, shake, return,
+    settle, and release, with telemetry-backed transition guards.
 
-The existing `ArmActionRunner` and `G1ArmActionClient` remain useful as the
-baseline/reference behavior during migration, but the learned-control path must
-not depend on predefined Unitree actions such as `"shake hand"`.
+The existing `ArmActionRunner` and `G1ArmActionClient` remain useful only as
+baseline/reference behavior. The arm-SDK path must neither invoke nor overlap
+predefined Unitree actions such as `"shake hand"` or `"release arm"`.
 
 Exit criterion: while the robot remains in Regular/Motion Control mode, the
 controller can acquire arm authority without a discontinuity, hold the measured
@@ -224,19 +237,17 @@ through the new actuator.
 Required sequence:
 
 ```text
-hold measured pose
+capture and hold fixed initial pose
       ↓
-move to verified handshake pose
+acquire arm-SDK authority
       ↓
-tactile contact
+smooth arm-SDK raise and settle
       ↓
 small smooth arm oscillation
       ↓
-stop immediately on release/abort
+smooth return and settle
       ↓
-open hand
-      ↓
-return/release arm authority
+controlled arm-SDK authority release
 ```
 
 Start with the smallest joint set capable of producing a natural handshake.
@@ -588,18 +599,27 @@ Add it only for a concrete personalization feature, with:
 
 ## Immediate next implementation steps
 
-1. Add `handshake/g1_arm_controller.py` based on the control pattern used by
-   Unitree `xr_teleoperate` in motion mode.
-2. Validate read-only joint mapping and current arm state from `rt/lowstate`.
-3. Add arm-SDK authority acquisition/release with targets initialized from
-   measured joint positions.
-4. Test hold-only control with no commanded motion.
-5. Test one tiny, slow, bounded arm movement under gantry.
-6. Implement a deterministic low-amplitude handshake oscillation.
-7. Extend recording to capture arm targets, actual arm state, authority weight,
-   and timing.
-8. Validate native lower-body balance while custom arm control is active.
-9. Only then connect vision/touch policy outputs to the new actuator layer.
+1. Hard-disable the preserved `ExecuteAction`-to-arm-SDK publication path; keep
+   its code and traces available only under the incident report.
+2. Confirm from Unitree documentation the exact controller ownership, FSM
+   prerequisites, arm command-field semantics, and supported recovery behavior
+   for this robot and firmware.
+3. Add offline tests for a full acquire/raise/settle/shake/return/settle/release
+   state machine, including failure injection and abort from every phase.
+4. Generate and review the complete bounded trajectory and command stream with
+   no DDS publisher.
+5. Add `handshake/g1_arm_controller.py` based on the control pattern used by
+   Unitree `xr_teleoperate` in motion mode, with a fixed initial target during
+   authority acquisition.
+6. Extend recording to capture every phase, arm target, measured arm and lower
+   body state, authority weight, limit decision, cancellation, and timing.
+7. Write a new staged physical-test plan beginning with no-motion authority
+   acquisition and return under the reviewed gantry. Physical publication stays
+   suspended until that plan receives explicit approval.
+8. Validate one minimum-amplitude arm-SDK raise and return before adding shake.
+9. Validate the full deterministic arm-SDK raise/shake/return/release sequence,
+   then native lower-body balance, before adding hand, touch, vision, or policy
+   outputs.
 
 ## References
 
