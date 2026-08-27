@@ -1,21 +1,189 @@
 # Session Handoff
 
-Last updated: 2026-08-20 (Asia/Shanghai)
+Last updated: 2026-08-27 (Asia/Shanghai)
 
 ## Resume point
 
-The project now follows two parallel tracks documented in `PROJECT_PLAN.md`:
+The active work is milestone 2B's arm-only architecture redesign after the
+second arm-drop incident. It intentionally excludes vision, tactile triggers,
+BrainCo hand commands, human contact, and repeated oscillation.
 
-1. Vision track
-   - Detect a human hand and estimate `(x, y, z)` using RealSense color/depth.
-   - Track the hand with a bounded inverse-kinematics arm controller.
-2. Handshake track
-   - Validate and analyze the existing trajectory recordings.
-   - Derive and safely stage a bounded arm oscillation during `hold`.
+**Do not run `--execute-arm-sdk`.** The current implementation preserves the
+failed high-level-action-to-arm-SDK handoff for incident analysis and is not an
+approved controller. Exact code and traces are committed under
+`incident_reports/2026-08-27/`.
 
-The trajectory validator is now implemented. The next handshake deliverable is
-a synchronized derived training table, followed by right-arm trajectory
-visualization and analysis during `hold`.
+The replacement architecture uses `rt/arm_sdk` continuously for the full arm
+sequence, starting from documented Regular mode without an active high-level
+arm action:
+
+```text
+measure initial pose
+-> acquire arm-SDK authority while holding that fixed pose
+-> smooth arm-SDK raise
+-> bounded arm-SDK shake
+-> smooth arm-SDK return to the initial pose
+-> measured settling
+-> controlled arm-SDK authority release
+```
+
+The redesign will be implemented in or replace:
+
+- `g1_standalone_arm_sequence.py`
+- `handshake/standalone_arm.py`
+- `handshake/sport_mode_state.py`
+- `tests/test_standalone_arm.py`
+- `README_g1_standalone_arm_sequence.md`
+- `capture_g1_failure_snapshot.py`
+- `diagnose_g1_arm_service.py`
+
+The former harness successfully characterized high-level raise/release poses,
+generated a 250 Hz command-only sequence, and met dry-run timing targets. Those
+results did not validate controller ownership. Two later minimum-amplitude
+publication trials reproduced the arm drop even after RPC return, reviewed-pose
+settling, target continuity, velocity clipping, authority blending, and a
+0.005 rad requested elbow excursion.
+
+The new design must not call modern `shake hand`/`release arm` or legacy sport
+handshake tasks in its nominal sequence. Additional delay or settling is not a
+fix because the second failure followed a code-zero raise RPC and 0.519 seconds
+of sustained settling.
+
+The synchronized training-table work described below remains useful but is no
+longer the immediate priority.
+
+## Latest standalone-arm evidence
+
+The latest recorded attempts are under `telemetry/standalone_arm/` and must be
+preserved as raw evidence.
+
+- `sequence_20260824T210345Z.jsonl` predates strict RPC-return validation. The
+  raise action returned 3104 and the release returned 7400, but the old runner
+  incorrectly labeled the capture successful. Its reported pose centers are
+  not approved and must not be used as reviewed command inputs.
+- Intermediate attempts correctly aborted. Low-state DDS telemetry was present, while
+  the locomotion FSM RPC failed with 3102 (send failure). In the latest run,
+  the arm action-list RPC also failed with 3104 (timeout).
+- Later evidence demonstrated successful preflight, repeatable high-level
+  raise/release, reviewed pose centers, and a 250 Hz command-only rehearsal.
+  Those results are retained only as characterization evidence because the
+  subsequent cross-controller publication failed twice.
+- No further arm-SDK publication is authorized by this handoff.
+
+### 2026-08-27 controller-handoff recurrence
+
+Two gantry-attached publication trials are the authoritative latest evidence:
+
+```text
+telemetry/standalone_arm/sequence_20260826T233757Z.jsonl
+telemetry/standalone_arm/sequence_20260826T233832Z.jsonl
+```
+
+The first reached 15.117 rad/s at the right elbow and failed the final
+safe-return envelope. The second followed a code-zero `shake hand` return and
+measured settling, then reached 14.668 rad/s at the right elbow before the
+state-limit abort; its later high-level return recovered the reviewed pose.
+In both runs the commanded elbow remained near 0.183 rad while the measured
+joint departed toward approximately 0.9 rad. The requested trajectory was only
+0.005 rad, so the motion was a controller-handoff failure rather than execution
+of the planned movement.
+
+Committed reports and forensic artifacts:
+
+```text
+incident_reports/INCIDENT_REPORT_2026-08-27_ARM_SDK_HANDOFF_RECURRENCE.md
+incident_reports/2026-08-27/
+```
+
+Safety conclusions:
+
+- RPC return plus measured settling does not prove controller release.
+- The transition from a held high-level arm action to `rt/arm_sdk` is prohibited.
+- The existing controlled weight-ramp abort did not stabilize the divergent arm.
+- All physical arm-SDK publication remains suspended pending a new design and
+  return-to-test review.
+
+### 2026-08-26 controller failure and reboot diagnosis
+
+Before the robot reboot, low-state DDS telemetry remained healthy and the
+generic `robot_state` RPC remained available, but the remote controller could
+not request damping and the locomotion FSM RPC failed with 3102. A sealed
+pre-reboot snapshot recorded `ai_sport` service status 1:
+
+```text
+telemetry/diagnostics/g1_pre_reboot_20260825T181128Z/
+telemetry/diagnostics/g1_pre_reboot_20260825T181128Z.tar.gz
+```
+
+Archive SHA-256:
+
+```text
+5c8ee9dd1f0e9af606649efcfff400f456de9c441c7ff63d4196b0e0f43af78c
+```
+
+After reboot, the matching snapshot recorded `ai_sport` status 0 and the same
+locomotion FSM query succeeded. This localizes the prior remote/SDK failure to
+the robot's high-level locomotion path rather than PC2 networking or general
+DDS. The evidence does not distinguish a service switch/debug transition,
+controller-ownership cleanup failure, or service crash as the initiating
+cause. The post-reboot bundle and analysis are:
+
+```text
+telemetry/diagnostics/g1_post_reboot_20260825T181632Z/
+telemetry/diagnostics/g1_post_reboot_20260825T181632Z.tar.gz
+```
+
+Archive SHA-256:
+
+```text
+fdbfe3913813007025d2e1c6d440ad3a976b95931e5592b54be226993b16b49c
+```
+
+The robot subsequently entered standard mode. Read-only preflight observed
+FSM 501, mode 0, confirming that the remote-to-`ai_sport` path and locomotion
+RPC are healthy. The arm action-list call still failed with 3104:
+
+```text
+telemetry/standalone_arm/sequence_20260825T181926Z.jsonl
+```
+
+Deeper read-only discovery established that the `sport` server API is present
+and version-matched at 1.0.0.0, while the `arm` server API-version endpoint
+returns 3103 (API not registered). Meanwhile `rt/arm/action/state` publishes
+about 14 Hz and reports no held action. Evidence:
+
+```text
+telemetry/diagnostics/g1_arm_service_standard_20260825T182100Z.json
+```
+
+SHA-256:
+
+```text
+cd2eea01281b65726c7ab3aebd351af85c95b5837417b53e37f0fcce9944ef3e
+```
+
+The installed official legacy G1 locomotion client exposes arm-task API 7106:
+task 2 is `ShakeHand(stage=0)` and task 3 is `ShakeHand(stage=1)`. These are
+two handshake stages, not a documented equivalent of the newer explicit
+`release arm` action 99. Do not assume task 3 safely lowers or releases the
+arm; characterize both stages under the gantry before assigning raise/return
+semantics.
+
+The current code rejects every nonzero high-level or service RPC result,
+records service failures together, accepts only the documented FSM 500, 501,
+or FSM 801 mode 0/3 combinations, requires sustained measured settling, and
+requires reviewed post-action and safe-return poses before publication.
+
+## Verification baseline
+
+On 2026-08-26, the `g1brainco` Python environment passed all 65 tests:
+
+```bash
+/home/dwei/miniconda3/envs/g1brainco/bin/python -m unittest discover -s tests -v
+```
+
+The offline plan command also completed, Python compilation passed, and
+`git diff --check` reported no whitespace errors.
 
 ## Validation baseline
 
@@ -109,27 +277,42 @@ Other useful per-motor fields are `velocity_rad_s`, `acceleration_raw`,
 
 ## Exact next actions
 
-1. Implement and compare 5 Hz and 10 Hz synchronized derived tables with
-   per-modality validity masks and sample-age fields.
-2. Choose freshness limits from the observed frequency and gap distributions.
-3. Plot the right-arm joints during `hold`, aligned with tactile and controller
-   states.
-4. Separate stationary holds from oscillatory or human-driven motion and
-   estimate amplitude, frequency, phase, and joint coupling.
-5. Propose a newly generated bounded oscillation; do not blindly replay a
-   recorded measured trajectory.
-6. Decide how validation reports and rejected/incomplete episodes should be
-   stored without modifying raw recordings.
-7. In the vision track, prototype observe-only human-hand XYZ localization.
+1. Add a hard software disable for the failed
+   `high-level action -> rt/arm_sdk` publication path. Preserve its archived
+   incident snapshot, but make the live executable refuse that combination.
+2. Obtain or locate authoritative Unitree documentation for Regular-mode
+   `rt/arm_sdk` ownership, joint-29 weight semantics, FSM modes 0/1, required
+   `LowCmd` initialization, and supported release/recovery behavior.
+3. Design the complete arm-SDK raise/shake/return trajectory offline. Define
+   joint targets from kinematics and reviewed workspace limits rather than
+   replaying the high-level handshake pose.
+4. Hold one fixed initial target throughout authority acquisition; do not chase
+   measured positions during blend-in.
+5. Add a phase state machine with measured gates for authority acquisition,
+   raise, raised settling, shake, return, return settling, and release.
+6. Redesign abort handling for tracking divergence before taking authority,
+   while holding authority, and during release. Do not reuse the failed weight
+   ramp without new evidence.
+7. Add deterministic tests for FSM changes, target discontinuity, gravity
+   departure, torque/velocity violations, stale telemetry, scheduling overrun,
+   cancellation, and every abort phase.
+8. Generate plots and a complete command-only run with no publisher. Review
+   all 14 joint commands, gains, weight, timing, and lower-body state.
+9. Keep physical publication suspended. Any future gantry trial requires a new
+   written return-to-test approval and begins with authority acquisition and
+   return only—no raise or shake.
 
 ## Repository state at handoff
 
-- The two-track roadmap was committed as `aa738ab` (`document two-track
-  handshake roadmap`).
-- The validator has ten focused tests. All 50 automated tests pass with
-  OpenCV installed in the active Python environment.
+- The incident reports and evidence are pushed to `origin/main` through
+  `1bad58d` (`preserve incident code and traces`).
+- The standalone-arm implementation, documentation, tests, and the 2B roadmap
+  update are currently uncommitted.
+- The last offline suite contained 78 passing tests, but test success did not
+  validate the failed physical controller handoff.
 - Raw recordings, logs, dependencies, and caches are intentionally untracked.
 
 At the start of the next session, read this file and `PROJECT_PLAN.md`, inspect
-`git status`, and continue with the synchronized training table unless the user
-changes priority.
+`git status`, review both incident reports, and begin with the hard disable and
+offline continuous-arm-SDK redesign. Do not resume physical preflight or
+publication unless the user establishes a new return-to-test review.
