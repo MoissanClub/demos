@@ -13,6 +13,7 @@ from typing import Optional, Sequence
 
 from g1_standalone_arm_sequence import ArmSdkCommandSink, LowStateMonitor, _load_sdk_path
 from handshake.arm_feedforward import G1ArmGravityFeedforward
+from handshake.cartesian_arm_ik import G1CartesianArmIK
 from handshake.continuous_arm import ContinuousArmConfig, ContinuousArmController
 from handshake.recording import TelemetryRecorder
 from handshake.standalone_arm import ARM_JOINT_INDICES
@@ -25,6 +26,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     modes.add_argument("--execute-authority-test", action="store_true")
     modes.add_argument("--execute-xr-pattern-authority-test", action="store_true")
     modes.add_argument("--execute-cycle", action="store_true")
+    modes.add_argument("--execute-cartesian-10cm-right-x-test", action="store_true")
     targets = parser.add_mutually_exclusive_group()
     targets.add_argument("--raise-offset-rad", nargs=14, type=float, metavar="Q")
     targets.add_argument("--candidate-capture-scale-010", action="store_true")
@@ -39,6 +41,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--confirm-estop-ready", action="store_true")
     parser.add_argument("--confirm-regular-mode-501-0", action="store_true")
     parser.add_argument("--confirm-xr-message-pattern-reviewed", action="store_true")
+    parser.add_argument("--confirm-cartesian-10cm-plan-reviewed", action="store_true")
     args = parser.parse_args(argv)
     if args.execute_authority_test:
         parser.error(
@@ -46,20 +49,26 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         )
     if args.execute_xr_pattern_authority_test:
         parser.error(
-            "exact-XR physical testing is suspended after the release-phase joint-20 abort"
+            "exact-XR zero-offset verification completed; physical execution is disabled pending review"
+        )
+    if args.execute_cartesian_10cm_right_x_test:
+        parser.error(
+            "the feedback-limited 10 cm Cartesian verification completed; "
+            "physical execution is disabled pending review"
         )
     if args.execute_cycle:
         parser.error(
             "raise execution is paused until the compensated zero-offset physical check is accepted"
         )
     authority_test = args.execute_authority_test or args.execute_xr_pattern_authority_test
-    if not authority_test and not (
+    physical_cartesian = args.execute_cartesian_10cm_right_x_test
+    if not authority_test and not physical_cartesian and not (
         args.raise_offset_rad is not None or args.candidate_capture_scale_010
     ):
         parser.error("select 14 reviewed offsets or --candidate-capture-scale-010")
     if not 0.0 <= args.hold_seconds <= 30.0:
         parser.error("hold duration must be between 0 and 30 seconds")
-    if (args.execute_cycle or authority_test) and not (
+    if (args.execute_cycle or authority_test or physical_cartesian) and not (
         args.confirm_gantry_attached
         and args.confirm_estop_ready
         and args.confirm_regular_mode_501_0
@@ -69,6 +78,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         )
     if args.execute_xr_pattern_authority_test and not args.confirm_xr_message_pattern_reviewed:
         parser.error("XR-pattern execution requires --confirm-xr-message-pattern-reviewed")
+    if physical_cartesian and not args.confirm_cartesian_10cm_plan_reviewed:
+        parser.error("Cartesian execution requires --confirm-cartesian-10cm-plan-reviewed")
     return args
 
 
@@ -86,20 +97,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = args.output or Path("telemetry/continuous_arm") / f"authority_{run_id}.jsonl"
-    if args.execute_authority_test or args.execute_xr_pattern_authority_test:
+    if args.execute_authority_test or args.execute_xr_pattern_authority_test or args.execute_cartesian_10cm_right_x_test:
         offsets = {index: 0.0 for index in ARM_JOINT_INDICES}
     elif args.candidate_capture_scale_010:
         offsets = dict(CANDIDATE_CAPTURE_SCALE_010)
     else:
         offsets = dict(zip(ARM_JOINT_INDICES, args.raise_offset_rad))
     config = ContinuousArmConfig()
-    if args.execute_xr_pattern_authority_test:
+    if args.execute_xr_pattern_authority_test or args.execute_cartesian_10cm_right_x_test:
         config = replace(
             config, acquire_seconds=2.0, release_seconds=2.0,
-            max_measured_velocity_rad_s=0.25, max_tracking_error_rad=0.01,
+            max_measured_velocity_rad_s=0.25, max_tracking_error_rad=0.03,
             scale_feedforward_by_authority=False, step_to_full_authority=True,
         )
-    feedforward = G1ArmGravityFeedforward(args.g1_urdf)
+    if args.execute_cartesian_10cm_right_x_test:
+        config = replace(
+            config, raise_seconds=10.0, return_seconds=10.0,
+            settle_timeout_seconds=30.0, max_offset_rad=0.40,
+            max_command_lead_rad=0.020,
+        )
+    cartesian_planner = (
+        G1CartesianArmIK(args.g1_urdf) if args.execute_cartesian_10cm_right_x_test else None
+    )
+    feedforward = (
+        cartesian_planner.feedforward if cartesian_planner is not None
+        else G1ArmGravityFeedforward(args.g1_urdf)
+    )
     if args.print_plan:
         peak_velocity = max(abs(value) for value in offsets.values()) * 1.875 / min(
             config.raise_seconds, config.return_seconds
@@ -136,6 +159,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     result, reason = "aborted", "initialization_failed"
     try:
         controller.observe_initial_pose()
+        if cartesian_planner is not None:
+            left_target, right_target = cartesian_planner.forward_kinematics(controller.initial_pose)
+            right_target[0, 3] += 0.10
+            cartesian_plan = cartesian_planner.plan_trajectory(
+                left_target, right_target, controller.initial_pose,
+                config.raise_seconds, config.sample_rate_hz,
+            )
+            endpoint = cartesian_plan["endpoint"]["positions_rad"]
+            offsets = {i: endpoint[i] - controller.initial_pose[i] for i in ARM_JOINT_INDICES}
+            event("cartesian_plan_reviewed_at_runtime", {
+                "right_delta_m": [0.10, 0.0, 0.0],
+                "sample_count": cartesian_plan["sample_count"],
+                "maximum_joint_velocity_rad_s": cartesian_plan["maximum_joint_velocity_rad_s"],
+                "maximum_joint_step_rad": cartesian_plan["endpoint"]["maximum_joint_step_rad"],
+                "translation_error_m": cartesian_plan["endpoint"]["translation_error_m"],
+                "rotation_error_rad": cartesian_plan["endpoint"]["rotation_error_rad"],
+                "offsets_rad": offsets,
+            })
         zero_velocity = {index: 0.0 for index in ARM_JOINT_INDICES}
         initial_torque = feedforward(controller.initial_pose, zero_velocity)
         event("arm_feedforward_initialized", {
@@ -158,7 +199,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:
         reason = "operator_cancelled; authority state may require emergency-stop handling"
     except BaseException as exc:
-        reason = f"{type(exc).__name__}: {exc}; authority is not automatically released after a safety fault"
+        fault = f"{type(exc).__name__}: {exc}"
+        try:
+            controller.abort_release()
+            reason = f"{fault}; arm authority released after safety fault"
+        except BaseException as release_exc:
+            reason = f"{fault}; abort release failed: {type(release_exc).__name__}: {release_exc}"
     finally:
         recorder.record("continuous_arm.summary", {"result": result, "reason": reason})
         monitor.close()

@@ -421,7 +421,9 @@ class ArmSdkCommandSink:
             motor.mode = 1
             motor.tau = torques[index]
             motor.q = positions[index]
-            motor.dq = velocities[index]
+            # Match xr_teleoperate exactly: its arm publisher always sends
+            # zero desired velocity and uses q plus RNEA feedforward torque.
+            motor.dq = 0.0
             motor.kp, motor.kd = arm_sdk_gains(index)
         self.command.crc = self.crc.Crc(self.command)
         self.publisher.Write(self.command)

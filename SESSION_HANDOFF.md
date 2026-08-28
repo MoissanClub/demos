@@ -2,6 +2,97 @@
 
 Last updated: 2026-08-29 (Asia/Shanghai)
 
+## Current authoritative handoff: successful Cartesian verification
+
+This section supersedes the older same-day notes below. The robot ended the
+session healthy in Regular mode `(FSM 501, mode 0)`; a final read-only preflight
+confirmed that state after the successful physical run. No reboot is required
+before resuming tomorrow, although the normal read-only preflight remains the
+first step.
+
+### Physically verified result
+
+The operator visibly confirmed the right arm moving forward and returning. The
+successful run requested a 0.10 m right-hand world-X displacement and recorded:
+
+- measured maximum right-hand X displacement: **0.09555 m**;
+- lateral displacement at maximum X: 0.00017 m;
+- vertical displacement at maximum X: 0.00637 m;
+- maximum active arm velocity: 0.1810 rad/s;
+- maximum active arm torque: 2.3125 Nm;
+- final right-hand Cartesian residual: 0.00176 m in X;
+- final maximum joint residual: 0.01547 rad;
+- 6,094 contiguous commands and 2,361 low-state samples;
+- successful outbound settle, return settle, authority release, and verified
+  native-controller return to `(501, 0)`.
+
+Authoritative local evidence (intentionally not committed because it is 28 MB):
+
+```text
+telemetry/continuous_arm/cartesian_10cm_lead020_visible_20260829.jsonl
+telemetry/standalone_arm/preflight_after_cartesian_10cm_success_20260829.jsonl
+```
+
+### Implementation now in the repository
+
+- `handshake/cartesian_arm_ik.py` provides bounded dual-arm Pinocchio IK and a
+  smooth quintic joint trajectory with bounded RNEA feedforward.
+- The reviewed 10 cm solve keeps the left arm fixed. Its live endpoint used a
+  0.34914 rad maximum joint offset, 0.00721 m model translation residual, and
+  0.01532 rad rotation residual.
+- `g1_standalone_arm_sequence.py` now matches XR Teleoperate by publishing
+  desired joint velocity `dq=0`; motion uses desired position `q`, RNEA torque,
+  and the upstream G1 gain map.
+- `handshake/continuous_arm.py` adds measured-state-following command limiting.
+  The successful configuration capped the commanded joint target at 0.020 rad
+  ahead of measured state while retaining a 0.030 rad tracking gate.
+- Motion and native-release velocity gates are separate. Native takeover may
+  move faster than commanded motion without preventing authority release.
+- A fault after authority acquisition invokes `abort_release()`, holding the
+  measured pose while ramping arm-SDK weight to zero and verifying `(501, 0)`.
+- Runtime IK is calculated from the live initial pose before constructing the
+  publisher. A failed solve therefore publishes nothing.
+
+The one-shot `--execute-cartesian-10cm-right-x-test` mode is hard-disabled after
+successful verification. Legacy authority and raise modes also remain disabled.
+Do not remove these guards casually.
+
+### Failed iterations retained as evidence
+
+The initial open-loop attempts moved only about 2 cm before shoulder joint 22
+exceeded tracking error. One required a reboot because authority remained in
+mode 1. The first feedback-limited attempt reached 2.34 cm before exceeding the
+0.25 rad/s active-motion velocity gate; its new abort path successfully returned
+to `(501, 0)`. Reducing command lead from 0.025 to 0.020 rad produced the full
+successful cycle above.
+
+### Tomorrow's resume sequence
+
+1. Run the read-only preflight and require `(501, 0)`:
+
+   ```bash
+   /home/dwei/miniconda3/envs/g1brainco/bin/python \
+     g1_standalone_arm_sequence.py --probe-preflight \
+     --network-interface eth0
+   ```
+
+2. Run the offline test suite and `git diff --check`. The focused controller,
+   IK, and standalone suites ended today with 53/53 passing.
+3. Review the successful telemetry summary above and preserve the raw JSONL.
+4. Next engineering step: extract the verified Cartesian move into a reusable,
+   parameterized Cartesian command interface while keeping displacement,
+   workspace, joint-offset, tracking, velocity, torque, and authority-release
+   gates. Start offline; do not immediately re-enable the one-shot physical flag.
+5. Before any new physical target, require a fresh runtime plan review and an
+   operator at the emergency stop. Re-enable exactly one guarded mode for one
+   attempt, then disable it immediately and inspect telemetry.
+
+## Archived earlier 2026-08-29 handoff
+
+The material below records earlier intermediate states and is retained for
+incident history. Where it conflicts with the current authoritative handoff
+above, follow the current handoff.
+
 ## 2026-08-29 end-of-session handoff
 
 The robot must be rebooted before resuming. The last physical run ended during

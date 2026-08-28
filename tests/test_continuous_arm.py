@@ -109,6 +109,20 @@ class ContinuousArmCliTests(unittest.TestCase):
                 "--execute-xr-pattern-authority-test", "--confirm-gantry-attached",
                 "--confirm-estop-ready", "--confirm-regular-mode-501-0",
             ])
+
+    def test_cartesian_10cm_physical_mode_is_disabled_after_verification(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args([
+                "--execute-cartesian-10cm-right-x-test",
+                "--confirm-gantry-attached", "--confirm-estop-ready",
+                "--confirm-regular-mode-501-0",
+            ])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args([
+                "--execute-cartesian-10cm-right-x-test",
+                "--confirm-gantry-attached", "--confirm-estop-ready",
+                "--confirm-regular-mode-501-0", "--confirm-cartesian-10cm-plan-reviewed",
+            ])
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse_args([
                 "--execute-xr-pattern-authority-test", "--confirm-gantry-attached",
@@ -212,6 +226,26 @@ class ContinuousArmControllerTests(unittest.TestCase):
         ]
         self.assertTrue(acquire)
         self.assertEqual({row["positions"]["15"] for row in acquire}, {0.2})
+
+    def test_measured_state_following_caps_joint_command_lead(self):
+        clock, events = FakeClock(), []
+        plant = Plant(clock)
+        controller = ContinuousArmController(
+            plant.state, plant.sport, None,
+            lambda name, details: events.append((name, details)),
+            lambda q, dq: {i: 0.0 for i in ARM_JOINT_INDICES},
+            publish_commands=True,
+            config=replace(fast_config(), max_command_lead_rad=0.020),
+            clock=clock.clock, monotonic_ns=clock.monotonic_ns, sleep=clock.sleep,
+        )
+        controller.observe_initial_pose()
+        controller.attach_command_sink(plant.command)
+        controller.phase = "raise"
+        controller._send(
+            {i: (0.10 if i == 22 else 0.0) for i in ARM_JOINT_INDICES},
+            {i: 0.0 for i in ARM_JOINT_INDICES}, 1.0,
+        )
+        self.assertAlmostEqual(plant.commands[-1][0][22], 0.020)
 
     def test_exact_xr_semantics_step_authority_and_do_not_scale_torque(self):
         clock, events = FakeClock(), []

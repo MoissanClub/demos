@@ -34,8 +34,10 @@ class ContinuousArmConfig:
     pose_tolerance_rad: float = 0.03
     settle_velocity_rad_s: float = 0.1
     max_measured_velocity_rad_s: float = 1.0
+    max_release_velocity_rad_s: float = 1.0
     max_measured_torque_nm: float = 10.0
     max_tracking_error_rad: float = 0.03
+    max_command_lead_rad: Optional[float] = None
     scale_feedforward_by_authority: bool = True
     step_to_full_authority: bool = False
     max_offset_rad: float = 0.35
@@ -64,8 +66,12 @@ class ContinuousArmConfig:
             raise ValueError("settle velocity must be between 0.01 and 0.2 rad/s")
         if not 0.01 <= self.max_offset_rad <= 0.5:
             raise ValueError("maximum offset must be between 0.01 and 0.5 rad")
+        if not self.max_measured_velocity_rad_s <= self.max_release_velocity_rad_s <= 2.0:
+            raise ValueError("release velocity limit must be at least the motion limit and at most 2 rad/s")
         if not 0.005 <= self.max_tracking_error_rad <= 0.05:
             raise ValueError("maximum tracking error must be between 0.005 and 0.05 rad")
+        if self.max_command_lead_rad is not None and not 0.005 <= self.max_command_lead_rad <= 0.05:
+            raise ValueError("maximum command lead must be between 0.005 and 0.05 rad")
 
 
 def _smoothstep5(fraction: float) -> Tuple[float, float]:
@@ -199,10 +205,15 @@ class ContinuousArmController:
             )
         self.last_controller_state = observed
         positions, velocities, torques = arm_vectors(state)
+        velocity_limit = (
+            self.config.max_release_velocity_rad_s
+            if self.phase in {"authority_release", "internal_control_return"}
+            else self.config.max_measured_velocity_rad_s
+        )
         violations = [
             index
             for index in ARM_JOINT_INDICES
-            if abs(velocities[index]) > self.config.max_measured_velocity_rad_s
+            if abs(velocities[index]) > velocity_limit
             or abs(torques[index]) > self.config.max_measured_torque_nm
         ]
         if violations:
@@ -230,6 +241,16 @@ class ContinuousArmController:
 
     def _send(self, target: Mapping[int, float], velocity: Mapping[int, float], weight: float) -> None:
         measured, _, _ = self._check_state()
+        if self.config.max_command_lead_rad is not None and self.phase in {
+            "raise", "raised_settle", "raised_hold", "return", "return_settle",
+        }:
+            maximum_error = max(abs(float(target[i]) - measured[i]) for i in ARM_JOINT_INDICES)
+            scale = max(1.0, maximum_error / self.config.max_command_lead_rad)
+            target = {
+                i: measured[i] + (float(target[i]) - measured[i]) / scale
+                for i in ARM_JOINT_INDICES
+            }
+            velocity = {i: float(velocity[i]) / scale for i in ARM_JOINT_INDICES}
         positions = list(measured)
         velocities = [0.0] * len(positions)
         torques = [0.0] * len(positions)
@@ -342,6 +363,34 @@ class ContinuousArmController:
         if self.phase != "raised_hold" or self.raised_pose is None:
             raise RuntimeError("hold_once requires a raised arm")
         self._send(self.raised_pose, {i: 0.0 for i in ARM_JOINT_INDICES}, 1.0)
+
+    def abort_release(self) -> None:
+        """Release arm-SDK authority from the measured pose after a motion fault."""
+        if self.command_sink is None or self.authority_weight <= 0.0:
+            return
+        state, received_ns = self.state_supplier()
+        if state is None or received_ns is None:
+            raise RuntimeError("cannot release after abort without low-state telemetry")
+        measured, _, _ = arm_vectors(state)
+        target = {i: float(measured[i]) for i in ARM_JOINT_INDICES}
+        zeros = {i: 0.0 for i in ARM_JOINT_INDICES}
+        initial_weight = self.authority_weight
+        self.phase = "authority_release"
+        self._run_timed(
+            "authority_release", self.config.release_seconds,
+            lambda f: (target, zeros, initial_weight * (1.0 - f)),
+        )
+        self.phase = "internal_control_return"
+        deadline = self.clock() + self.config.internal_return_timeout_seconds
+        while self.clock() < deadline:
+            sport, sport_ns = self.sport_supplier()
+            if sport is not None and sport_ns is not None and int(sport.fsm_id) == self.config.required_fsm_id and int(sport.fsm_mode) == self.config.required_fsm_mode:
+                self.authority_weight = 0.0
+                self.phase = "released"
+                self.event("abort_release_finished", {"observed": (int(sport.fsm_id), int(sport.fsm_mode))})
+                return
+            self.sleep(1.0 / self.config.sample_rate_hz)
+        raise RuntimeError("abort release did not return the native controller to Regular mode")
 
     def release_arm(self) -> None:
         if self.phase != "raised_hold" or self.initial_pose is None or self.raised_pose is None:

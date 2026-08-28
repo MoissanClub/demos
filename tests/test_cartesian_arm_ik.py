@@ -31,6 +31,17 @@ class G1CartesianArmIKTests(unittest.TestCase):
         self.assertLess(result["maximum_joint_step_rad"], 0.01)
         self.assertLess(result["translation_error_m"]["right"], 0.001)
 
+    def test_one_millimeter_trajectory_is_smooth_and_bounded(self):
+        left, right = self.ik.forward_kinematics(self.initial)
+        right[0, 3] += 0.001
+        result = self.ik.plan_trajectory(left, right, self.initial, 2.0, 50.0)
+        self.assertEqual(result["sample_count"], 101)
+        self.assertLess(result["maximum_joint_velocity_rad_s"], 0.01)
+        self.assertTrue(all(v == 0.0 for v in result["samples"][0]["velocities_rad_s"].values()))
+        self.assertTrue(all(v == 0.0 for v in result["samples"][-1]["velocities_rad_s"].values()))
+        self.assertEqual(result["samples"][0]["positions_rad"], self.initial)
+        self.assertEqual(result["samples"][-1]["positions_rad"], result["endpoint"]["positions_rad"])
+
     def test_invalid_transform_fails_closed(self):
         left, right = self.ik.forward_kinematics(self.initial)
         right[3, 3] = 2.0

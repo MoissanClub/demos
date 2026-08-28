@@ -51,13 +51,14 @@ class G1CartesianArmIK:
         q0 = self._vector(previous, "previous positions")
         left = self._transform(left_target, "left target")
         right = self._transform(right_target, "right target")
-        if not 0.001 <= max_joint_step_rad <= 0.10:
-            raise ValueError("maximum joint step must be between 0.001 and 0.10 rad")
+        if not 0.001 <= max_joint_step_rad <= 0.40:
+            raise ValueError("maximum joint step must be between 0.001 and 0.40 rad")
         q = q0.copy()
         translation_weight = math.sqrt(50.0)
         weights = np.diag([translation_weight] * 3 + [1.0] * 3 +
                           [translation_weight] * 3 + [1.0] * 3)
         damping = 1e-4
+        continuity = 0.045
         converged = False
         for iteration in range(80):
             error = self._pose_error(q, left, right)
@@ -75,8 +76,8 @@ class G1CartesianArmIK:
             weighted_j = weights @ jacobian
             weighted_e = weights @ error
             # Damped least squares plus the upstream solver's continuity bias.
-            lhs = weighted_j.T @ weighted_j + (damping + 0.1) * np.eye(14)
-            rhs = -weighted_j.T @ weighted_e + 0.1 * (q0 - q)
+            lhs = weighted_j.T @ weighted_j + (damping + continuity) * np.eye(14)
+            rhs = -weighted_j.T @ weighted_e + continuity * (q0 - q)
             delta = np.linalg.solve(lhs, rhs)
             delta = np.clip(delta, -0.02, 0.02)
             q = np.clip(q + delta, self.robot.model.lowerPositionLimit,
@@ -105,6 +106,39 @@ class G1CartesianArmIK:
                 "strict_convergence": converged,
                 "translation_error_m": {"left": left_error, "right": right_error},
                 "rotation_error_rad": {"left": left_rotation_error, "right": right_rotation_error}}
+
+    def plan_trajectory(self, left_target, right_target, initial: Mapping[int, float],
+                        duration_seconds: float = 2.0, sample_rate_hz: float = 250.0):
+        """Solve one Cartesian endpoint, then time-parameterize it in joint space."""
+        if not 1.0 <= duration_seconds <= 10.0:
+            raise ValueError("trajectory duration must be between 1 and 10 seconds")
+        if not 50.0 <= sample_rate_hz <= 250.0:
+            raise ValueError("sample rate must be between 50 and 250 Hz")
+        endpoint = self.solve(left_target, right_target, initial, max_joint_step_rad=0.40)
+        q0 = self._vector(initial, "initial positions")
+        q1 = self._vector(endpoint["positions_rad"], "endpoint positions")
+        count = int(round(duration_seconds * sample_rate_hz)) + 1
+        samples = []
+        maximum_velocity = 0.0
+        for index in range(count):
+            fraction = index / (count - 1)
+            blend = 10 * fraction**3 - 15 * fraction**4 + 6 * fraction**5
+            derivative = 30 * fraction**2 - 60 * fraction**3 + 30 * fraction**4
+            q = q0 + (q1 - q0) * blend
+            dq = (q1 - q0) * derivative / duration_seconds
+            maximum_velocity = max(maximum_velocity, float(self.np.max(self.np.abs(dq))))
+            positions = dict(zip(ARM_JOINT_INDICES, map(float, q)))
+            velocities = dict(zip(ARM_JOINT_INDICES, map(float, dq)))
+            torques = self.feedforward(positions, velocities)
+            samples.append({"time_seconds": index / sample_rate_hz,
+                            "positions_rad": positions,
+                            "velocities_rad_s": velocities,
+                            "feedforward_torques_nm": torques})
+        if maximum_velocity > 0.075:
+            raise RuntimeError(f"Cartesian trajectory velocity {maximum_velocity:.4f} rad/s exceeds 0.075 rad/s")
+        return {"duration_seconds": duration_seconds, "sample_rate_hz": sample_rate_hz,
+                "sample_count": count, "maximum_joint_velocity_rad_s": maximum_velocity,
+                "endpoint": endpoint, "samples": samples}
 
     def _pose_error(self, q, left, right):
         np = self.np
