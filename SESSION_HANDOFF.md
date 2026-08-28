@@ -1,8 +1,129 @@
 # Session Handoff
 
-Last updated: 2026-08-27 (Asia/Shanghai)
+Last updated: 2026-08-29 (Asia/Shanghai)
+
+## 2026-08-29 end-of-session handoff
+
+The robot must be rebooted before resuming. The last physical run ended during
+authority release and the last recorded state was `(FSM 501, mode 1)`. Do not
+construct an arm publisher or issue a recovery command before a post-reboot
+read-only check shows sustained `(501, 0)` and stationary arms.
+
+### What was established
+
+The continuous arm path now reproduces the relevant G1-29 `xr_teleoperate`
+pattern:
+
+- `rt/arm_sdk` at 250 Hz;
+- `mode_pr=0` and live low-state `mode_machine` (observed value 5);
+- motors 0--28 initialized from their measured positions with the upstream
+  strong/weak/wrist gain map;
+- exact SDK-to-Pinocchio ordering for joints 15--28;
+- full bounded gravity RNEA rather than authority-scaled torque;
+- immediate full authority, matching XR rather than a custom ramp;
+- fixed measured pose for zero-offset acquisition and hold;
+- gradual weight release followed by verified `(501, 0)` return.
+
+The exact-XR acquisition and full-authority hold in
+`telemetry/continuous_arm/exact_xr_visible_check_20260829.jsonl` succeeded. The
+operator reported no visible motion. The run completed acquisition, the
+zero-offset trajectory, raised settling, one-second hold, return, and return
+settling. It aborted only during authority release at weight 0.720 because
+joint 20 moved toward the native controller's pose and exceeded the outgoing
+arm-SDK target by 0.01 rad. Recorded joint-20 departure was approximately
+0.0095 rad with 0.104 rad/s peak velocity. This was an invalid release-phase
+tracking rule, not an acquisition or hold instability.
+
+The controller has since been corrected: target-tracking error remains enforced
+during acquisition, motion, and hold, but is not enforced during
+`authority_release`, where the native controller is expected to blend toward
+its own pose. Velocity, torque, telemetry freshness, FSM, finite-value, and RNEA
+bounds remain enforced during release. A regression test covers native pose
+blending during release.
+
+All 104 offline tests pass after this correction. Both legacy physical modes
+and the exact-XR physical flag are currently hard-disabled in
+`g1_arm_sdk_raise.py`; leave them disabled until the resume gates below pass.
+
+### Offline Cartesian layer
+
+`handshake/cartesian_arm_ik.py` and `plan_g1_cartesian_arm.py` implement an
+offline-only version of the `G1_29_ArmIK` pattern:
+
+```text
+dual 6D hand targets -> bounded posture-continuous Pinocchio IK
+-> 14 joint targets -> bounded gravity RNEA
+```
+
+It has no Unitree SDK or DDS imports. A 1 mm right-hand target produced a
+0.0028 rad maximum joint step and approximately 0.000038 m translation
+residual. Cartesian output is not authorized for hardware yet.
+
+### Resume sequence
+
+1. Confirm the robot has been rebooted and is secured on the reviewed gantry
+   with an exclusion zone and dedicated physical emergency-stop operator.
+2. Run only the read-only preflight and require sustained `(501, 0)`, live
+   `mode_machine=5`, stationary arms, and normal wrist telemetry:
+
+   ```bash
+   /home/dwei/miniconda3/envs/g1brainco/bin/python \
+     g1_standalone_arm_sequence.py \
+     --probe-preflight \
+     --network-interface eth0
+   ```
+
+3. Re-run the 104-test offline suite and `git diff --check`.
+4. Review the release-phase tracking fix in `handshake/continuous_arm.py` and
+   its regression in `tests/test_continuous_arm.py`.
+5. Only while the operator is visibly watching both wrists, temporarily enable
+   exactly one `--execute-xr-pattern-authority-test` zero-offset run. Do not
+   enable `--execute-authority-test` or `--execute-cycle`.
+6. Accept only if acquisition/hold remain visually stationary, release reaches
+   weight zero, `arm_released` is recorded, final FSM is `(501, 0)`, recording
+   has no drops/errors, and all measured safety limits pass.
+7. Re-disable physical execution immediately after the attempt and analyze its
+   telemetry before considering any Cartesian or joint displacement.
+
+The next physical check remains zero-offset. Do not command a Cartesian move,
+raise candidate, hand action, human contact, or repeated oscillation in the
+next session.
 
 ## Resume point
+
+A second compensated zero-offset attempt using XR-pattern `LowCmd`
+initialization was rejected on 2026-08-29. Live state changed from the earlier
+read-only `(501, 1)` observation to `(501, 0)`, so the guarded run proceeded.
+It copied live `mode_machine=5`, initialized motors 0--28 from measured state
+with the upstream gain map, and used tighter limits, but aborted when joint 27
+exceeded 0.25 rad/s. Evidence is in
+`telemetry/continuous_arm/xr_pattern_refusal_mode1.jsonl`. The XR-pattern
+physical mode is now hard-disabled. No more physical arm-SDK testing is
+authorized; secure the robot physically and escalate the repeated wrist
+transition to Unitree/vendor support before another publisher is considered.
+
+On 2026-08-29 the compensated zero-offset check was physically run and rejected.
+`telemetry/continuous_arm/authority_20260828T173734Z.jsonl` aborted at 0.770
+authority after right wrist roll reached 0.966 rad/s; right wrist yaw reached
+0.724 rad/s at the same transition. The final recorded FSM state remained
+`(501, 1)` because the fail-closed safety path did not attempt software release.
+Both physical modes in `g1_arm_sdk_raise.py` are now hard-disabled. Do not rerun
+or issue a software recovery command. First physically secure the robot and
+verify its current controller state through a separately reviewed read-only
+diagnostic.
+
+The 2026-08-29 continuation implemented the first compensated-control slice:
+`handshake/arm_feedforward.py` loads the checked-out `xr_teleoperate` G1-29
+URDF, verifies its exact 14-joint reduced-model ordering, computes Pinocchio
+RNEA, rejects non-finite or out-of-bound output, and exposes model provenance.
+The continuous controller and `rt/arm_sdk` sink now carry per-joint torque,
+scale it with authority weight, and record it. All 95 offline tests pass.
+
+No physical command was published during this continuation. The immediate next
+step is to review the selected 5 Nm shoulder/elbow and 1.5 Nm wrist software
+bounds and the command telemetry, then prepare explicit approval for one
+gantry-attached compensated zero-offset authority cycle. A raise candidate is
+still paused.
 
 The active work is milestone 2B's arm-only architecture redesign after the
 second arm-drop incident. It intentionally excludes vision, tactile triggers,

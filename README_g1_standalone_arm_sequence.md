@@ -14,6 +14,21 @@ arm smoothly, perform the bounded shake, return smoothly to the initial pose,
 verify settling, and release authority. No modern or legacy handshake action
 may overlap that session.
 
+The continuous controller now has a fail-closed gravity-feedforward layer. It
+loads the checked-out `xr_teleoperate` G1-29 URDF, reduces it to the exact
+joint-15-through-28 ordering, and computes Pinocchio RNEA with zero desired
+acceleration. Each torque must be finite and remain within the software bound
+(5 Nm for shoulder/elbow joints and 1.5 Nm for wrists). Commanded torque is
+scaled by the arm-SDK authority weight, reaches the bounded RNEA value at full
+authority, and returns to zero during release. The URDF SHA-256, joint mapping,
+bounds, and every commanded torque are recorded. A mapping, model, non-finite,
+or torque-bound failure aborts before the next command.
+
+This is offline-validated code, not approval for another physical trial. The
+next physical step remains one newly reviewed, gantry-attached, compensated
+zero-offset authority cycle. Do not use the raise candidate before its results
+have been compared with the three uncompensated baselines.
+
 The roadmap and return-to-test gates are in `PROJECT_PLAN.md`; the current
 resume point and incident evidence are in `SESSION_HANDOFF.md` and
 `incident_reports/2026-08-27/`.

@@ -1,0 +1,19 @@
+[Unit]
+Description=G1 BrainCo tactile handshake demo
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=dwei
+Group=dwei
+WorkingDirectory=/home/dwei/demos
+Environment=HOME=/home/dwei
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/dwei/miniconda3/envs/g1brainco/bin/python /home/dwei/demos/g1_brainco_handshake_demo.py --enable-arm
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
