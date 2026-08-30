@@ -2,6 +2,32 @@
 
 Last updated: 2026-08-30 (Asia/Shanghai)
 
+## 2026-08-30 recorded 1 cm attempt A: no command published
+
+Guarded attempt `20260830-right-x-1cm-a` aborted during initial observation
+before publisher construction or any `rt/arm_sdk` command. The evidence run has
+no command stream and only the `initial_observe` telemetry events. Pinocchio
+model initialization occurred after the evidence session started and delayed
+Python DDS callbacks for about six seconds; sport-mode telemetry consequently
+aged to 5.759 seconds and the controller refused to proceed. The camera also
+fell to 1.33 fps during that CPU/GIL-heavy initialization. The abort-release
+path completed (with zero acquired authority), and a separate read-only
+post-abort preflight confirmed `(501, 0)`.
+
+Evidence:
+
+```text
+artifacts/robot_dev_runs/20260830T041341.506911Z_20260830-right-x-1cm-a/
+telemetry/standalone_arm/sequence_20260830T041406Z.jsonl
+```
+
+The one-shot attempt was immediately hard-disabled. The corrected harness now
+loads the model and solves IK from a fresh read-only planning snapshot before
+starting the physical evidence session. After fresh telemetry/video startup it
+requires the live arm pose to remain within 0.01 rad per joint and 0.005 m at
+both modeled hand endpoints before constructing a publisher. No motion limits
+or target values were relaxed.
+
 ## 2026-08-30 continuation: offline Cartesian interface
 
 The normal read-only resume preflight observed `(FSM 4, mode 0)`, not the

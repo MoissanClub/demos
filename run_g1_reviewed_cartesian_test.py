@@ -23,7 +23,7 @@ from robot_dev_harness.session import EvidenceSession
 
 
 ATTEMPT_ID = "20260830-right-x-1cm-a"
-PHYSICAL_EXECUTION_ENABLED = True
+PHYSICAL_EXECUTION_ENABLED = False
 RIGHT_DELTA_M = (0.01, 0.0, 0.0)
 LEFT_WORKSPACE = CartesianWorkspace(
     (-0.0085, 0.2166, -0.1278), (0.0316, 0.2567, -0.0877),
@@ -92,18 +92,13 @@ def main(argv=None) -> int:
     adapter = LegacyTelemetryAdapter(run)
     session = None
     controller = None
+    planning_monitor = None
     result, reason = "incomplete", "initialization_failed"
     plan_summary = None
     try:
-        _load_sdk_path()
-        from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-
-        ChannelFactoryInitialize(0, args.network_interface)
-        monitor = LowStateMonitor(adapter)
-        camera = OpenCVMjpegCamera(run, device=args.camera_device, fps=30.0)
-        session = EvidenceSession(run, camera, [monitor])
-        session.start()
-
+        # Pinocchio construction and IK are CPU-heavy enough to delay Python DDS
+        # callbacks on PC2. Complete them before starting the physical camera
+        # and telemetry session, then require the fresh execution pose to match.
         planner = G1CartesianArmIK(args.g1_urdf)
         config = replace(
             ContinuousArmConfig(),
@@ -119,6 +114,10 @@ def main(argv=None) -> int:
             scale_feedforward_by_authority=False,
             step_to_full_authority=True,
         )
+        _load_sdk_path()
+        from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+
+        ChannelFactoryInitialize(0, args.network_interface)
 
         def event(name, details):
             # Exact published payloads are already recorded before transport in
@@ -130,21 +129,68 @@ def main(argv=None) -> int:
             }):
                 raise RuntimeError(f"could not record controller event {name}")
 
+        planning_monitor = LowStateMonitor(adapter)
+        planning_monitor.start()
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if planning_monitor.latest()[0] is not None and planning_monitor.latest_sport()[0] is not None:
+                break
+            time.sleep(0.01)
+        planning_controller = ContinuousArmController(
+            planning_monitor.latest, planning_monitor.latest_sport, None, event,
+            planner.feedforward, publish_commands=False, config=config,
+        )
+        planning_controller.observe_initial_pose()
+        planning_pose = dict(planning_controller.initial_pose)
+        plan = G1CartesianCommandInterface(planner).plan(
+            COMMAND, planning_pose, LEFT_WORKSPACE, RIGHT_WORKSPACE,
+        )
+        planning_monitor.close()
+        planning_monitor = None
+        endpoint = plan["endpoint"]["positions_rad"]
+        offsets = {
+            index: endpoint[index] - planning_pose[index]
+            for index in ARM_JOINT_INDICES
+        }
+        plan_summary = {key: value for key, value in plan.items() if key != "samples"}
+        if not run.record(
+            "events", "cartesian-planner",
+            {"event": "cartesian_plan_completed_before_physical_session", **plan_summary},
+        ):
+            raise RuntimeError("could not record Cartesian plan")
+
+        monitor = LowStateMonitor(adapter)
+        camera = OpenCVMjpegCamera(run, device=args.camera_device, fps=30.0)
+        session = EvidenceSession(run, camera, [monitor])
+        session.start()
         controller = ContinuousArmController(
             monitor.latest, monitor.latest_sport, None, event, planner.feedforward,
             publish_commands=True, config=config,
         )
         controller.observe_initial_pose()
-        plan = G1CartesianCommandInterface(planner).plan(
-            COMMAND, controller.initial_pose, LEFT_WORKSPACE, RIGHT_WORKSPACE,
-        )
-        endpoint = plan["endpoint"]["positions_rad"]
-        offsets = {
-            index: endpoint[index] - controller.initial_pose[index]
+        pose_drift = max(
+            abs(controller.initial_pose[index] - planning_pose[index])
             for index in ARM_JOINT_INDICES
-        }
-        plan_summary = {key: value for key, value in plan.items() if key != "samples"}
-        session.event("runtime_cartesian_plan_accepted", plan_summary)
+        )
+        planned_hands = planner.forward_kinematics(planning_pose)
+        execution_hands = planner.forward_kinematics(controller.initial_pose)
+        endpoint_drift = max(
+            float(planner.np.linalg.norm(current[:3, 3] - planned[:3, 3]))
+            for current, planned in zip(execution_hands, planned_hands)
+        )
+        if pose_drift > 0.01:
+            raise RuntimeError(
+                f"live arm pose drift {pose_drift:.5f} rad exceeds reviewed 0.01 rad"
+            )
+        if endpoint_drift > 0.005:
+            raise RuntimeError(
+                f"live hand endpoint drift {endpoint_drift:.5f} m exceeds reviewed 0.005 m"
+            )
+        session.event("runtime_cartesian_plan_accepted", {
+            **plan_summary,
+            "maximum_planning_to_execution_joint_drift_rad": pose_drift,
+            "maximum_planning_to_execution_endpoint_drift_m": endpoint_drift,
+        })
 
         state, state_ns = monitor.latest()
         if state is None or state_ns is None:
@@ -194,6 +240,8 @@ def main(argv=None) -> int:
                     f"; abort release failed: {type(release_exc).__name__}: {release_exc}"
                 )
     finally:
+        if planning_monitor is not None:
+            planning_monitor.close()
         verification = (
             "# Guarded Cartesian physical test\n\n"
             f"- Attempt: `{ATTEMPT_ID}`\n"
