@@ -22,8 +22,8 @@ from robot_dev_harness.run_artifacts import RunArtifacts
 from robot_dev_harness.session import EvidenceSession
 
 
-ATTEMPT_ID = "20260830-right-x-1cm-a"
-PHYSICAL_EXECUTION_ENABLED = False
+ATTEMPT_ID = "20260830-right-x-1cm-b"
+PHYSICAL_EXECUTION_ENABLED = True
 RIGHT_DELTA_M = (0.01, 0.0, 0.0)
 LEFT_WORKSPACE = CartesianWorkspace(
     (-0.0085, 0.2166, -0.1278), (0.0316, 0.2567, -0.0877),
