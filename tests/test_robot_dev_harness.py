@@ -8,7 +8,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from robot_dev_harness.run_artifacts import RunArtifacts
-from robot_dev_harness.evidence import load_frame_timestamps, nearest_frame
+from robot_dev_harness.evidence import (
+    format_visual_review, load_frame_timestamps, nearest_frame,
+)
 from robot_dev_harness.session import EvidenceSession
 from robot_dev_harness.commands import EvidenceBackedCommandTransport
 from record_robot_dev_run import parse_args
@@ -127,6 +129,24 @@ class EvidenceTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "contiguous"):
                 load_frame_timestamps(path)
+
+    def test_visual_review_ties_each_finding_to_exact_frames(self):
+        markdown = format_visual_review([{
+            "finding": "The outbound endpoint was clear of obstacles.",
+            "frames": [
+                {"event": "outbound start", "frame_index": 82,
+                 "frame_timestamp_utc": "2026-08-30T04:17:45.555105Z"},
+                {"event": "outbound finish", "frame_index": 322,
+                 "frame_timestamp_utc": "2026-08-30T04:17:53.560065Z"},
+            ],
+        }])
+        self.assertIn("frame `82` at `2026-08-30T04:17:45.555105Z`", markdown)
+        self.assertIn("frame `322` at `2026-08-30T04:17:53.560065Z`", markdown)
+        self.assertIn("clear of obstacles", markdown)
+
+    def test_visual_review_rejects_an_untraceable_finding(self):
+        with self.assertRaisesRegex(ValueError, "no frame references"):
+            format_visual_review([{"finding": "Motion looked smooth.", "frames": []}])
 
 
 class FakeSource:

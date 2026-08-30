@@ -68,6 +68,8 @@ frames, and preserves partial results as `incomplete` if any component fails.
   cadence.
 - `extract_nearest_frame` maps a telemetry event's `monotonic_ns` to the closest
   video frame and reports the signed timing offset.
+- `format_visual_review` renders verification findings only when every finding
+  includes one or more exact synchronized frame indices and UTC timestamps.
 - `LegacyTelemetryAdapter` lets existing repository subscribers write into the
   generic run schema without changing their control behavior.
 - `EvidenceSession` coordinates telemetry-source and camera readiness, records
@@ -80,6 +82,12 @@ Future projects should add telemetry sources through `RunArtifacts.record()`
 and keep their project-specific event detection outside this package. Movement
 commands must remain in separately reviewed control code. Starting evidence
 capture does not authorize robot motion.
+
+Visual verification must state which frames support each observation. Cite the
+event-aligned start/end frames (and intermediate frames when needed), including
+both frame index and UTC timestamp. Scope wording to what those cited frames
+show; a few event frames do not by themselves establish that every intervening
+video frame was reviewed.
 
 ## Chinese recording announcements
 
