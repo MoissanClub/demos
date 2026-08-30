@@ -23,7 +23,7 @@ from robot_dev_harness.session import EvidenceSession
 
 
 ATTEMPT_ID = "20260830-right-x-1cm-b"
-PHYSICAL_EXECUTION_ENABLED = True
+PHYSICAL_EXECUTION_ENABLED = False
 RIGHT_DELTA_M = (0.01, 0.0, 0.0)
 LEFT_WORKSPACE = CartesianWorkspace(
     (-0.0085, 0.2166, -0.1278), (0.0316, 0.2567, -0.0877),

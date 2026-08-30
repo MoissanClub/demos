@@ -7,13 +7,13 @@ import run_g1_reviewed_cartesian_test as reviewed
 
 
 class ReviewedCartesianPhysicalTests(unittest.TestCase):
-    def test_only_exact_reviewed_retry_is_enabled(self):
-        args = reviewed.parse_args([
-            "--execute-reviewed-attempt", reviewed.ATTEMPT_ID,
-            "--confirm-area-clear", "--confirm-estop-ready",
-            "--confirm-regular-mode-501-0", "--confirm-plan-reviewed",
-        ])
-        self.assertEqual(args.execute_reviewed_attempt, reviewed.ATTEMPT_ID)
+    def test_retry_is_hard_disabled_after_execution(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            reviewed.parse_args([
+                "--execute-reviewed-attempt", reviewed.ATTEMPT_ID,
+                "--confirm-area-clear", "--confirm-estop-ready",
+                "--confirm-regular-mode-501-0", "--confirm-plan-reviewed",
+            ])
 
     def test_enabled_attempt_requires_every_confirmation(self):
         with patch.object(reviewed, "PHYSICAL_EXECUTION_ENABLED", True):

@@ -2,6 +2,76 @@
 
 Last updated: 2026-08-30 (Asia/Shanghai)
 
+## Current pause point: recorded 1 cm Cartesian test passed
+
+Guarded retry `20260830-right-x-1cm-b` completed the full right-arm Cartesian
+out-and-return cycle with synchronized telemetry and `/dev/video6`. The exact
+physical flag was immediately hard-disabled after the attempt. An independent
+read-only postflight confirmed healthy native control in `(FSM 501, mode 0)`.
+No remote-control state change or reboot is required before tomorrow's normal
+read-only preflight.
+
+### Verified result
+
+- requested right-hand world-X displacement: `0.010000 m`;
+- measured maximum X displacement: `0.009658 m`;
+- lateral/vertical deviation at maximum X: `-0.000226 / -0.000035 m`;
+- maximum active-control arm velocity: `0.07977 rad/s` at joint 28;
+- maximum release-phase velocity: `0.25617 rad/s` at joint 26, below the
+  separate `0.50 rad/s` release gate;
+- maximum active-control torque: `2.25 Nm` at joint 23;
+- return-settled Cartesian residual: `[0.000366, -0.000070, -0.000055] m`;
+- return-settled maximum joint residual: `0.003871 rad`;
+- 5,306 contiguous pre-send command records, 2,284 low-state samples, 1,001
+  sport-state samples, and zero evidence-record drops;
+- 690 synchronized video frames at measured `29.985 fps`;
+- successful outbound settle, return settle, authority release, native return,
+  and independent `(501, 0)` postflight;
+- visual event-frame review showed smooth outbound/return motion with no person,
+  obstacle contact, collision, jerk, or unexpected motion.
+
+Touch telemetry was unavailable and no touch interaction was commanded; this
+was an arm-only test. IMU peaks were modest: `0.04013 rad/s` gyroscope norm and
+`0.3028 m/s^2` acceleration change from the first sample.
+
+Authoritative local evidence (large generated artifacts, intentionally ignored
+by Git but protected by `checksums.sha256`):
+
+```text
+artifacts/robot_dev_runs/20260830T041734.493329Z_20260830-right-x-1cm-b/
+telemetry/standalone_arm/sequence_20260830T041835Z.jsonl
+```
+
+The run's `verification.md` has the final pass assessment. All checksums pass.
+
+### Important implementation state
+
+- `run_g1_reviewed_cartesian_test.py` is hard-disabled after retry B.
+- Heavy Pinocchio model loading and IK now finish from a fresh read-only
+  planning snapshot before starting physical telemetry/video capture.
+- The physical session then requires planning-to-execution continuity within
+  `0.01 rad` per joint and `0.005 m` at both hand endpoints before publisher
+  construction.
+- The reusable evidence harness records command intent before transport and
+  synchronizes telemetry/video on the host monotonic clock.
+- `analyze_g1_cartesian_run.py` provides repeatable phase-aware telemetry and
+  video-event analysis.
+
+### Tomorrow's resume sequence
+
+1. Run only the normal read-only preflight and require `(501, 0)`.
+2. Run the full offline suite and `git diff --check`.
+3. Verify the retry-B artifact checksums and review its `verification.md`.
+4. Improve command-loop evidence performance before another physical attempt:
+   retry B averaged `238.76 Hz` rather than the configured `250 Hz`, with a
+   `14.95 ms` maximum interval. Preserve evidence-first ordering while reducing
+   synchronous command serialization or payload size; validate timing offline.
+5. Add or explicitly route BrainCo touch telemetry before any human-contact or
+   handshake test. Do not infer touch from arm or IMU data.
+6. Keep physical execution disabled until a new exact target, runtime plan,
+   safety confirmation, camera view, and single-attempt authorization are
+   reviewed. Do not progress directly to human contact or repeated shaking.
+
 ## 2026-08-30 recorded 1 cm attempt A: no command published
 
 Guarded attempt `20260830-right-x-1cm-a` aborted during initial observation
