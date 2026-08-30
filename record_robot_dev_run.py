@@ -9,9 +9,9 @@ import time
 from pathlib import Path
 
 from robot_dev_harness.adapters import LegacyTelemetryAdapter
-from robot_dev_harness.evidence import extract_nearest_frame, load_frame_timestamps
 from robot_dev_harness.run_artifacts import RunArtifacts
 from robot_dev_harness.opencv_camera import OpenCVMjpegCamera
+from robot_dev_harness.session import EvidenceSession
 
 
 def parse_args(argv=None):
@@ -71,11 +71,9 @@ def main(argv=None) -> int:
         run, device=args.camera_device, width=args.camera_width,
         height=args.camera_height, fps=args.camera_fps,
     )
-    monitor = None
-    camera_active = False
+    session = None
     result = "incomplete"
     reason = "initialization_failed"
-    camera_summary = None
     try:
         from g1_standalone_arm_sequence import LowStateMonitor, _load_sdk_path
 
@@ -84,40 +82,16 @@ def main(argv=None) -> int:
 
         ChannelFactoryInitialize(0, args.network_interface)
         monitor = LowStateMonitor(adapter)
-        monitor.start()
-        camera.start()
-        camera_active = True
-        run.record("events", "harness", {
-            "event": "read_only_recording_started",
+        session = EvidenceSession(run, camera, [monitor])
+        session.start()
+        session.event("read_only_recording_started", {
             "publishes_robot_commands": False,
         })
         deadline = time.monotonic() + args.duration_seconds
         while time.monotonic() < deadline:
-            if not camera.active or camera.error:
-                raise RuntimeError(camera.error or "camera stopped before recording deadline")
+            session.require_ready()
             time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
-        camera_summary = camera.stop()
-        camera_active = False
-        frame_index_path = run.path("video/frame_timestamps.jsonl")
-        frame_rows = load_frame_timestamps(frame_index_path)
-        evidence = []
-        for event, event_ns in (
-            ("recording-baseline", frame_rows[0]["monotonic_ns"]),
-            ("recording-final", frame_rows[-1]["monotonic_ns"]),
-        ):
-            item = extract_nearest_frame(
-                run.path(camera_summary["path"]), frame_index_path, event_ns,
-                event, run.path("evidence"),
-            )
-            item["evidence_path"] = str(
-                Path(item["evidence_path"]).relative_to(run.directory.resolve())
-            )
-            evidence.append(item)
-        run.record("events", "harness", {
-            "event": "read_only_recording_stopped",
-            "camera": camera_summary,
-            "evidence": evidence,
-        })
+        session.event("read_only_recording_duration_complete")
         result, reason = "complete", "requested_read_only_capture_complete"
     except KeyboardInterrupt:
         result, reason = "aborted", "operator_cancelled"
@@ -125,13 +99,6 @@ def main(argv=None) -> int:
         result = "incomplete"
         reason = f"{type(exc).__name__}: {exc}"
     finally:
-        if monitor is not None:
-            monitor.close()
-        if camera_active and camera.active:
-            try:
-                camera_summary = camera.stop()
-            except BaseException as exc:
-                reason += f"; camera cleanup failed: {type(exc).__name__}: {exc}"
         verification = (
             "# Read-only development run\n\n"
             f"- Result: **{result}**\n"
@@ -139,10 +106,12 @@ def main(argv=None) -> int:
             "- Robot commands published: **no**\n"
             "- Automated movement verification: not applicable to this capture rehearsal.\n"
         )
-        run.finalize(
-            result, reason, verification,
-            metadata={"camera": camera_summary} if camera_summary else None,
-        )
+        if session is None:
+            run.finalize(result, reason, verification)
+        else:
+            session.finalize(result, reason, verification)
+            result = session.final_status or result
+            reason = session.final_reason or reason
     print(f"result={result}; reason={reason}; run={run.directory}")
     return 0 if result == "complete" else 1
 

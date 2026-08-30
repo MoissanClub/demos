@@ -70,6 +70,11 @@ frames, and preserves partial results as `incomplete` if any component fails.
   video frame and reports the signed timing offset.
 - `LegacyTelemetryAdapter` lets existing repository subscribers write into the
   generic run schema without changing their control behavior.
+- `EvidenceSession` coordinates telemetry-source and camera readiness, records
+  lifecycle events, and finalizes partial runs without containing motion code.
+- `EvidenceBackedCommandTransport` queues command intent before invoking a
+  separately reviewed project transport exactly once; it refuses to invoke the
+  transport when evidence capture is not ready and records transport failures.
 
 Future projects should add telemetry sources through `RunArtifacts.record()`
 and keep their project-specific event detection outside this package. Movement

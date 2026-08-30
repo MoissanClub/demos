@@ -9,6 +9,8 @@ from pathlib import Path
 
 from robot_dev_harness.run_artifacts import RunArtifacts
 from robot_dev_harness.evidence import load_frame_timestamps, nearest_frame
+from robot_dev_harness.session import EvidenceSession
+from robot_dev_harness.commands import EvidenceBackedCommandTransport
 from record_robot_dev_run import parse_args
 
 
@@ -122,6 +124,105 @@ class EvidenceTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "contiguous"):
                 load_frame_timestamps(path)
+
+
+class FakeSource:
+    def __init__(self):
+        self.started = False
+        self.closed = False
+
+    def start(self):
+        self.started = True
+
+    def close(self):
+        self.closed = True
+
+
+class FakeCamera:
+    def __init__(self, fail=False):
+        self.active = False
+        self.error = None
+        self.fail = fail
+
+    def start(self):
+        if self.fail:
+            raise RuntimeError("camera failed")
+        self.active = True
+
+    def stop(self):
+        self.active = False
+        return {}
+
+
+class EvidenceSessionTests(unittest.TestCase):
+    def test_session_requires_camera_before_command_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = RunArtifactsTests().create_run(temporary)
+            source, camera = FakeSource(), FakeCamera()
+            session = EvidenceSession(run, camera, [source])
+            with self.assertRaisesRegex(RuntimeError, "not ready"):
+                session.command("controller", {"q": [0.0]})
+            session.start()
+            self.assertTrue(source.started)
+            self.assertTrue(session.ready)
+            session.command("controller", {"q": [0.0]})
+            session.finalize("complete", "test_complete", "# Verification\n")
+            self.assertTrue(source.closed)
+            command = json.loads(run.path("telemetry/commands.jsonl").read_text())
+            self.assertEqual(command["data"]["q"], [0.0])
+
+    def test_camera_start_failure_closes_started_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = RunArtifactsTests().create_run(temporary)
+            source = FakeSource()
+            session = EvidenceSession(run, FakeCamera(fail=True), [source])
+            with self.assertRaisesRegex(RuntimeError, "camera failed"):
+                session.start()
+            self.assertTrue(source.closed)
+            session.finalize("incomplete", "camera_failed", "# Verification\n")
+
+    def test_command_transport_records_before_one_physical_send(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = RunArtifactsTests().create_run(temporary)
+            session = EvidenceSession(run, FakeCamera())
+            observed = []
+
+            def transport(command):
+                # The command must already have a reserved sequence before the
+                # separately reviewed transport is entered.
+                observed.append((dict(command), run._sequences.get("commands")))
+                return "sent"
+
+            sender = EvidenceBackedCommandTransport(session, "test-controller", transport)
+            with self.assertRaisesRegex(RuntimeError, "not ready"):
+                sender.send({"position": 1.0})
+            self.assertEqual(observed, [])
+            session.start()
+            self.assertEqual(sender.send({"position": 1.0}), "sent")
+            self.assertEqual(observed, [({"position": 1.0}, 1)])
+            session.finalize("complete", "test_complete", "# Verification\n")
+
+    def test_command_transport_failure_is_recorded_and_not_retried(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = RunArtifactsTests().create_run(temporary)
+            session = EvidenceSession(run, FakeCamera())
+            calls = []
+
+            def transport(command):
+                calls.append(command)
+                raise RuntimeError("transport down")
+
+            session.start()
+            sender = EvidenceBackedCommandTransport(session, "test-controller", transport)
+            with self.assertRaisesRegex(RuntimeError, "transport down"):
+                sender.send({"position": 1.0})
+            self.assertEqual(len(calls), 1)
+            session.finalize("aborted", "transport_failed", "# Verification\n")
+            events = [
+                json.loads(line)["data"]["event"]
+                for line in run.path("telemetry/events.jsonl").read_text().splitlines()
+            ]
+            self.assertIn("command_transport_failed", events)
 
 
 if __name__ == "__main__":
