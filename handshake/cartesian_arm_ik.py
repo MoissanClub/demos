@@ -108,13 +108,22 @@ class G1CartesianArmIK:
                 "rotation_error_rad": {"left": left_rotation_error, "right": right_rotation_error}}
 
     def plan_trajectory(self, left_target, right_target, initial: Mapping[int, float],
-                        duration_seconds: float = 2.0, sample_rate_hz: float = 250.0):
+                        duration_seconds: float = 2.0, sample_rate_hz: float = 250.0,
+                        max_joint_step_rad: float = 0.40,
+                        max_joint_velocity_rad_s: float = 0.075):
         """Solve one Cartesian endpoint, then time-parameterize it in joint space."""
         if not 1.0 <= duration_seconds <= 10.0:
             raise ValueError("trajectory duration must be between 1 and 10 seconds")
         if not 50.0 <= sample_rate_hz <= 250.0:
             raise ValueError("sample rate must be between 50 and 250 Hz")
-        endpoint = self.solve(left_target, right_target, initial, max_joint_step_rad=0.40)
+        if not 0.001 <= max_joint_step_rad <= 0.40:
+            raise ValueError("maximum joint step must be between 0.001 and 0.40 rad")
+        if not 0.001 <= max_joint_velocity_rad_s <= 0.075:
+            raise ValueError("maximum joint velocity must be between 0.001 and 0.075 rad/s")
+        endpoint = self.solve(
+            left_target, right_target, initial,
+            max_joint_step_rad=max_joint_step_rad,
+        )
         q0 = self._vector(initial, "initial positions")
         q1 = self._vector(endpoint["positions_rad"], "endpoint positions")
         count = int(round(duration_seconds * sample_rate_hz)) + 1
@@ -134,10 +143,15 @@ class G1CartesianArmIK:
                             "positions_rad": positions,
                             "velocities_rad_s": velocities,
                             "feedforward_torques_nm": torques})
-        if maximum_velocity > 0.075:
-            raise RuntimeError(f"Cartesian trajectory velocity {maximum_velocity:.4f} rad/s exceeds 0.075 rad/s")
+        if maximum_velocity > max_joint_velocity_rad_s:
+            raise RuntimeError(
+                f"Cartesian trajectory velocity {maximum_velocity:.4f} rad/s exceeds "
+                f"{max_joint_velocity_rad_s:.4f} rad/s"
+            )
         return {"duration_seconds": duration_seconds, "sample_rate_hz": sample_rate_hz,
                 "sample_count": count, "maximum_joint_velocity_rad_s": maximum_velocity,
+                "joint_step_limit_rad": max_joint_step_rad,
+                "joint_velocity_limit_rad_s": max_joint_velocity_rad_s,
                 "endpoint": endpoint, "samples": samples}
 
     def _pose_error(self, q, left, right):

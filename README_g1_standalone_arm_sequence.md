@@ -78,6 +78,36 @@ This mode imports no Unitree SDK and cannot move the robot:
 python g1_standalone_arm_sequence.py --offline-plan-only
 ```
 
+### Parameterized Cartesian command planning
+
+`plan_g1_cartesian_arm.py` is the reusable, offline-only Cartesian command
+interface. It cannot publish DDS commands. Every plan requires explicit
+world-frame bounds for both hands; it rejects an initial pose or target outside
+those reviewed workspaces. It also enforces the Cartesian displacement norm,
+maximum joint offset, maximum joint velocity, duration, sample rate, IK
+residuals, joint limits, and bounded RNEA feedforward.
+
+```bash
+python plan_g1_cartesian_arm.py \
+  --initial-arm-q Q15 Q16 Q17 Q18 Q19 Q20 Q21 Q22 Q23 Q24 Q25 Q26 Q27 Q28 \
+  --right-delta-m DX DY DZ \
+  --left-workspace-min-m LX_MIN LY_MIN LZ_MIN \
+  --left-workspace-max-m LX_MAX LY_MAX LZ_MAX \
+  --right-workspace-min-m RX_MIN RY_MIN RZ_MIN \
+  --right-workspace-max-m RX_MAX RY_MAX RZ_MAX \
+  --maximum-displacement-m 0.02 \
+  --maximum-joint-offset-rad 0.40 \
+  --maximum-joint-velocity-rad-s 0.075 \
+  --duration-seconds 2 \
+  --sample-rate-hz 250 \
+  --summary-only
+```
+
+Workspace values must come from a separately reviewed runtime plan; do not use
+placeholder or broad bounds to make a rejected target pass. The retired
+`--execute-cartesian-10cm-right-x-test` flag remains hard-disabled after its
+one successful verification. This planning interface does not re-authorize it.
+
 ## Read-only mode and service preflight
 
 Before another physical attempt, query the current locomotion FSM and arm

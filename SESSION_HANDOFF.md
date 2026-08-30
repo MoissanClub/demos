@@ -1,6 +1,38 @@
 # Session Handoff
 
-Last updated: 2026-08-29 (Asia/Shanghai)
+Last updated: 2026-08-30 (Asia/Shanghai)
+
+## 2026-08-30 continuation: offline Cartesian interface
+
+The normal read-only resume preflight observed `(FSM 4, mode 0)`, not the
+required Regular-mode `(501, 0)`, and aborted before constructing an arm
+publisher or issuing motion. Diagnostic evidence is in
+`telemetry/standalone_arm/sequence_20260830T034513Z.jsonl`. Do not run a
+physical arm test while FSM 4 remains active. A future physical session must
+first establish the intended robot/controller mode through the operator's
+normal Unitree procedure and then pass a fresh read-only `(501, 0)` preflight.
+
+Offline work resumed successfully:
+
+- the focused controller, IK, and standalone suites passed 53/53 before edits;
+- `handshake/cartesian_command.py` now provides an offline-only parameterized
+  dual-hand Cartesian delta interface;
+- every command requires reviewed world-frame workspaces for both the initial
+  and target hand endpoints;
+- the interface enforces displacement norm, joint-offset, trajectory-velocity,
+  duration, sample-rate, IK-residual, model-joint, and RNEA torque gates;
+- `plan_g1_cartesian_arm.py` exposes those parameters without importing Unitree
+  DDS or constructing a publisher;
+- the retired `--execute-cartesian-10cm-right-x-test` flag remains
+  hard-disabled;
+- the expanded focused suite passes 56/56.
+
+Next: review and commit this offline slice, then design the timestamped run
+artifact recorder described in `HANDSHAKE_SYSTEM_PROMPT.md`. Do not connect the
+new command interface to physical publication until `(501, 0)` is restored, a
+fresh target and workspace are reviewed, synchronized telemetry/video capture
+is implemented, the operator confirms the physical test session is safe, and
+exactly one guarded attempt is explicitly authorized.
 
 ## Current authoritative handoff: successful Cartesian verification
 

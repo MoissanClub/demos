@@ -4,6 +4,11 @@ from pathlib import Path
 import numpy as np
 
 from handshake.cartesian_arm_ik import G1CartesianArmIK
+from handshake.cartesian_command import (
+    CartesianDeltaCommand,
+    CartesianWorkspace,
+    G1CartesianCommandInterface,
+)
 from handshake.standalone_arm import ARM_JOINT_INDICES
 
 URDF = Path("/home/dwei/xr_teleoperate/assets/g1/g1_body29_hand14.urdf")
@@ -47,6 +52,50 @@ class G1CartesianArmIKTests(unittest.TestCase):
         right[3, 3] = 2.0
         with self.assertRaisesRegex(ValueError, "homogeneous"):
             self.ik.solve(left, right, self.initial)
+
+    def test_parameterized_command_preserves_intent_and_bounds(self):
+        left, right = self.ik.forward_kinematics(self.initial)
+        margin = np.array([0.02, 0.02, 0.02])
+        interface = G1CartesianCommandInterface(self.ik)
+        result = interface.plan(
+            CartesianDeltaCommand(
+                right_delta_m=(0.001, 0.0, 0.0),
+                duration_seconds=2.0,
+                sample_rate_hz=50.0,
+                maximum_displacement_m=0.01,
+                maximum_joint_offset_rad=0.01,
+                maximum_joint_velocity_rad_s=0.01,
+            ),
+            self.initial,
+            CartesianWorkspace(tuple(left[:3, 3] - margin), tuple(left[:3, 3] + margin)),
+            CartesianWorkspace(tuple(right[:3, 3] - margin), tuple(right[:3, 3] + margin)),
+        )
+        self.assertEqual(result["command"]["right_delta_m"], [0.001, 0.0, 0.0])
+        self.assertEqual(result["command"]["frame"], "world")
+        self.assertEqual(result["joint_step_limit_rad"], 0.01)
+        self.assertEqual(result["joint_velocity_limit_rad_s"], 0.01)
+
+    def test_parameterized_command_rejects_vector_norm_over_limit(self):
+        with self.assertRaisesRegex(ValueError, "right Cartesian displacement"):
+            CartesianDeltaCommand(
+                right_delta_m=(0.008, 0.008, 0.0),
+                maximum_displacement_m=0.01,
+            )
+
+    def test_parameterized_command_rejects_target_outside_workspace(self):
+        left, right = self.ik.forward_kinematics(self.initial)
+        margin = np.array([0.002, 0.002, 0.002])
+        interface = G1CartesianCommandInterface(self.ik)
+        with self.assertRaisesRegex(RuntimeError, "target right hand.*outside"):
+            interface.plan(
+                CartesianDeltaCommand(
+                    right_delta_m=(0.003, 0.0, 0.0),
+                    maximum_displacement_m=0.01,
+                ),
+                self.initial,
+                CartesianWorkspace(tuple(left[:3, 3] - margin), tuple(left[:3, 3] + margin)),
+                CartesianWorkspace(tuple(right[:3, 3] - margin), tuple(right[:3, 3] + margin)),
+            )
 
 
 if __name__ == "__main__":
