@@ -153,6 +153,11 @@ class ContinuousArmControllerTests(unittest.TestCase):
         controller.attach_command_sink(plant.command)
         return controller
 
+    def test_twenty_second_raise_and_return_are_valid_but_release_is_not(self):
+        replace(fast_config(), raise_seconds=20.0, return_seconds=20.0).validate()
+        with self.assertRaisesRegex(ValueError, "release_seconds.*10 seconds"):
+            replace(fast_config(), release_seconds=20.0).validate()
+
     def test_full_raise_and_release_uses_continuous_arm_sdk_phases(self):
         clock, events = FakeClock(), []
         plant = Plant(clock)
@@ -246,6 +251,33 @@ class ContinuousArmControllerTests(unittest.TestCase):
             {i: 0.0 for i in ARM_JOINT_INDICES}, 1.0,
         )
         self.assertAlmostEqual(plant.commands[-1][0][22], 0.020)
+
+    def test_settle_scheduler_does_not_add_command_processing_time(self):
+        clock, events, command_times = FakeClock(), [], []
+        plant = Plant(clock)
+
+        def event(name, details):
+            events.append((name, details))
+            if name == "arm_sdk_command":
+                clock.now += 0.005
+
+        def command(positions, velocities, torques, weight):
+            command_times.append(clock.now)
+            plant.command(positions, velocities, torques, weight)
+
+        controller = ContinuousArmController(
+            plant.state, plant.sport, command, event,
+            lambda q, dq: {i: 0.0 for i in ARM_JOINT_INDICES},
+            publish_commands=True, config=fast_config(), clock=clock.clock,
+            monotonic_ns=clock.monotonic_ns, sleep=clock.sleep,
+        )
+        controller.initial_pose = {i: 0.0 for i in ARM_JOINT_INDICES}
+        controller.phase = "prepared"
+        controller._hold_until_settled("return_settle", controller.initial_pose)
+
+        intervals = [b - a for a, b in zip(command_times, command_times[1:])]
+        self.assertTrue(intervals)
+        self.assertTrue(all(abs(interval - 0.020) < 1e-9 for interval in intervals))
 
     def test_exact_xr_semantics_step_authority_and_do_not_scale_torque(self):
         clock, events = FakeClock(), []

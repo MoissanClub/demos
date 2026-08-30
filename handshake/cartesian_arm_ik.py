@@ -60,7 +60,11 @@ class G1CartesianArmIK:
         damping = 1e-4
         continuity = 0.045
         converged = False
-        for iteration in range(80):
+        for iteration in range(160):
+            # The posture-continuity bias gives a stable nearby solution for
+            # small moves. For larger reachable moves, finish with a lower
+            # bias so endpoint accuracy is not traded away indefinitely.
+            iteration_continuity = continuity if iteration < 80 else 0.035
             error = self._pose_error(q, left, right)
             if np.linalg.norm(error[:3]) < 1e-5 and np.linalg.norm(error[6:9]) < 1e-5 and np.linalg.norm(error[[3,4,5,9,10,11]]) < 1e-4:
                 converged = True
@@ -76,8 +80,8 @@ class G1CartesianArmIK:
             weighted_j = weights @ jacobian
             weighted_e = weights @ error
             # Damped least squares plus the upstream solver's continuity bias.
-            lhs = weighted_j.T @ weighted_j + (damping + continuity) * np.eye(14)
-            rhs = -weighted_j.T @ weighted_e + continuity * (q0 - q)
+            lhs = weighted_j.T @ weighted_j + (damping + iteration_continuity) * np.eye(14)
+            rhs = -weighted_j.T @ weighted_e + iteration_continuity * (q0 - q)
             delta = np.linalg.solve(lhs, rhs)
             delta = np.clip(delta, -0.02, 0.02)
             q = np.clip(q + delta, self.robot.model.lowerPositionLimit,
@@ -112,8 +116,8 @@ class G1CartesianArmIK:
                         max_joint_step_rad: float = 0.40,
                         max_joint_velocity_rad_s: float = 0.075):
         """Solve one Cartesian endpoint, then time-parameterize it in joint space."""
-        if not 1.0 <= duration_seconds <= 10.0:
-            raise ValueError("trajectory duration must be between 1 and 10 seconds")
+        if not 1.0 <= duration_seconds <= 30.0:
+            raise ValueError("trajectory duration must be between 1 and 30 seconds")
         if not 50.0 <= sample_rate_hz <= 250.0:
             raise ValueError("sample rate must be between 50 and 250 Hz")
         if not 0.001 <= max_joint_step_rad <= 0.40:

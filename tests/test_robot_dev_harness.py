@@ -234,6 +234,7 @@ class EvidenceSessionTests(unittest.TestCase):
                 # The command must already have a reserved sequence before the
                 # separately reviewed transport is entered.
                 observed.append((dict(command), run._sequences.get("commands")))
+                command["position"] = 2.0
                 return "sent"
 
             sender = EvidenceBackedCommandTransport(session, "test-controller", transport)
@@ -244,6 +245,8 @@ class EvidenceSessionTests(unittest.TestCase):
             self.assertEqual(sender.send({"position": 1.0}), "sent")
             self.assertEqual(observed, [({"position": 1.0}, 1)])
             session.finalize("complete", "test_complete", "# Verification\n")
+            recorded = json.loads(run.path("telemetry/commands.jsonl").read_text())
+            self.assertEqual(recorded["data"]["position"], 1.0)
 
     def test_command_transport_failure_is_recorded_and_not_retried(self):
         with tempfile.TemporaryDirectory() as temporary:

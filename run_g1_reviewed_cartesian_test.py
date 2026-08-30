@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute one exact, reviewed G1 Cartesian test with synchronized evidence."""
+"""Execute one exact-hash G1 Cartesian request with synchronized evidence."""
 from __future__ import annotations
 
 import argparse
@@ -12,8 +12,9 @@ from g1_standalone_arm_sequence import ArmSdkCommandSink, LowStateMonitor, _load
 from g1_recording_announcer import UnitreeRecordingAnnouncer
 from handshake.cartesian_arm_ik import G1CartesianArmIK
 from handshake.cartesian_command import (
-    CartesianDeltaCommand, CartesianWorkspace, G1CartesianCommandInterface,
+    G1CartesianCommandInterface,
 )
+from handshake.cartesian_request import CartesianMoveRequest
 from handshake.continuous_arm import ContinuousArmConfig, ContinuousArmController
 from handshake.standalone_arm import ARM_JOINT_INDICES
 from robot_dev_harness.adapters import LegacyTelemetryAdapter
@@ -23,28 +24,14 @@ from robot_dev_harness.run_artifacts import RunArtifacts
 from robot_dev_harness.session import EvidenceSession
 
 
-ATTEMPT_ID = "20260830-right-x-1cm-b"
 PHYSICAL_EXECUTION_ENABLED = False
-RIGHT_DELTA_M = (0.01, 0.0, 0.0)
-LEFT_WORKSPACE = CartesianWorkspace(
-    (-0.0085, 0.2166, -0.1278), (0.0316, 0.2567, -0.0877),
-)
-RIGHT_WORKSPACE = CartesianWorkspace(
-    (-0.0083, -0.2559, -0.1280), (0.0418, -0.2157, -0.0878),
-)
-COMMAND = CartesianDeltaCommand(
-    right_delta_m=RIGHT_DELTA_M,
-    duration_seconds=8.0,
-    sample_rate_hz=250.0,
-    maximum_displacement_m=0.01,
-    maximum_joint_offset_rad=0.05,
-    maximum_joint_velocity_rad_s=0.02,
-)
+AUTHORIZED_REQUEST_SHA256 = None
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--execute-reviewed-attempt", choices=(ATTEMPT_ID,), required=True)
+    parser.add_argument("--execute-reviewed-request", type=Path, required=True)
+    parser.add_argument("--expect-request-sha256", required=True)
     parser.add_argument("--network-interface", default="eth0")
     parser.add_argument("--camera-device", default="/dev/video6")
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts/robot_dev_runs"))
@@ -56,8 +43,23 @@ def parse_args(argv=None):
     parser.add_argument("--confirm-regular-mode-501-0", action="store_true")
     parser.add_argument("--confirm-plan-reviewed", action="store_true")
     args = parser.parse_args(argv)
+    try:
+        args.move_request = CartesianMoveRequest.load(args.execute_reviewed_request)
+    except (OSError, ValueError) as exc:
+        parser.error(f"invalid reviewed Cartesian request: {exc}")
+    if args.expect_request_sha256.lower() != args.move_request.sha256:
+        parser.error(
+            "reviewed Cartesian request hash mismatch: expected "
+            f"{args.expect_request_sha256.lower()}, calculated {args.move_request.sha256}"
+        )
     if not PHYSICAL_EXECUTION_ENABLED:
-        parser.error(f"reviewed attempt {ATTEMPT_ID} is currently hard-disabled")
+        parser.error(
+            f"reviewed attempt {args.move_request.attempt_id} is currently hard-disabled"
+        )
+    if args.move_request.sha256 != AUTHORIZED_REQUEST_SHA256:
+        parser.error(
+            "physical execution is not authorized for this exact request hash"
+        )
     if not all((
         args.confirm_area_clear, args.confirm_estop_ready,
         args.confirm_regular_mode_501_0, args.confirm_plan_reviewed,
@@ -71,11 +73,13 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    request = args.move_request
+    command = request.command
     run = RunArtifacts.create(
         root=args.artifact_root,
-        slug=ATTEMPT_ID,
+        slug=request.attempt_id,
         project="handshake",
-        purpose="Guarded 1 cm right-arm world-X Cartesian out-and-return test",
+        purpose="Guarded reviewed Cartesian coordinate out-and-return test",
         operator_safety_confirmation={
             "area_clear": True,
             "emergency_stop_ready": True,
@@ -84,10 +88,19 @@ def main(argv=None) -> int:
         },
         worktree=Path(__file__).parent,
         metadata={
-            "attempt_id": ATTEMPT_ID,
+            "attempt_id": request.attempt_id,
+            "request_sha256": request.sha256,
+            "request": request.as_dict(),
             "command_argv": list(sys.argv if argv is None else [sys.argv[0], *argv]),
             "publishes_robot_commands": True,
-            "right_delta_m": list(RIGHT_DELTA_M),
+            "right_target_m": (
+                list(command.right_target_m)
+                if command.right_target_m is not None else None
+            ),
+            "left_target_m": (
+                list(command.left_target_m)
+                if command.left_target_m is not None else None
+            ),
         },
     )
     adapter = LegacyTelemetryAdapter(run)
@@ -104,11 +117,11 @@ def main(argv=None) -> int:
         config = replace(
             ContinuousArmConfig(),
             acquire_seconds=2.0,
-            raise_seconds=COMMAND.duration_seconds,
-            return_seconds=COMMAND.duration_seconds,
+            raise_seconds=command.duration_seconds,
+            return_seconds=command.duration_seconds,
             release_seconds=2.0,
             settle_timeout_seconds=30.0,
-            max_offset_rad=COMMAND.maximum_joint_offset_rad,
+            max_offset_rad=command.maximum_joint_offset_rad,
             max_measured_velocity_rad_s=0.25,
             max_tracking_error_rad=0.03,
             max_command_lead_rad=0.020,
@@ -143,8 +156,8 @@ def main(argv=None) -> int:
         )
         planning_controller.observe_initial_pose()
         planning_pose = dict(planning_controller.initial_pose)
-        plan = G1CartesianCommandInterface(planner).plan(
-            COMMAND, planning_pose, LEFT_WORKSPACE, RIGHT_WORKSPACE,
+        plan = G1CartesianCommandInterface(planner).plan_position(
+            command, planning_pose, request.left_workspace, request.right_workspace,
         )
         planning_monitor.close()
         planning_monitor = None
@@ -224,10 +237,15 @@ def main(argv=None) -> int:
         controller.attach_command_sink(command_sink)
         session.event("physical_publisher_ready", physical_sink.runtime_configuration())
         controller.raise_arm(offsets)
-        hold_deadline = time.monotonic() + 1.0
+        hold_started = time.monotonic()
+        hold_deadline = hold_started + 1.0
+        hold_tick = 0
+        hold_period = 1.0 / config.sample_rate_hz
         while time.monotonic() < hold_deadline:
             controller.hold_once()
-            time.sleep(1.0 / config.sample_rate_hz)
+            hold_tick += 1
+            next_hold_deadline = hold_started + hold_tick * hold_period
+            time.sleep(max(0.0, next_hold_deadline - time.monotonic()))
         controller.release_arm()
         result, reason = "complete", "cartesian_out_return_release_complete"
     except KeyboardInterrupt:
@@ -247,7 +265,8 @@ def main(argv=None) -> int:
             planning_monitor.close()
         verification = (
             "# Guarded Cartesian physical test\n\n"
-            f"- Attempt: `{ATTEMPT_ID}`\n"
+            f"- Attempt: `{request.attempt_id}`\n"
+            f"- Reviewed request SHA-256: `{request.sha256}`\n"
             f"- Runtime result: **{result}**\n"
             f"- Runtime reason: `{reason}`\n"
             "- Visual and telemetry analysis: pending post-run review.\n"

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from handshake.cartesian_arm_ik import G1CartesianArmIK
 from handshake.cartesian_command import (
-    CartesianDeltaCommand,
+    CartesianDeltaCommand, CartesianPositionCommand,
     CartesianWorkspace,
     G1CartesianCommandInterface,
 )
@@ -16,7 +16,11 @@ from handshake.standalone_arm import ARM_JOINT_INDICES
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--initial-arm-q", nargs=14, type=float, required=True)
-    parser.add_argument("--right-delta-m", nargs=3, type=float, required=True, metavar=("DX", "DY", "DZ"))
+    right_target = parser.add_mutually_exclusive_group(required=True)
+    right_target.add_argument("--right-delta-m", nargs=3, type=float,
+                              metavar=("DX", "DY", "DZ"))
+    right_target.add_argument("--right-target-m", nargs=3, type=float,
+                              metavar=("X", "Y", "Z"))
     parser.add_argument("--left-delta-m", nargs=3, type=float, default=(0.0, 0.0, 0.0), metavar=("DX", "DY", "DZ"))
     parser.add_argument("--left-workspace-min-m", nargs=3, type=float, required=True, metavar=("X", "Y", "Z"))
     parser.add_argument("--left-workspace-max-m", nargs=3, type=float, required=True, metavar=("X", "Y", "Z"))
@@ -34,21 +38,32 @@ def main():
     args = parser.parse_args()
     previous = dict(zip(ARM_JOINT_INDICES, args.initial_arm_q))
     planner = G1CartesianArmIK(args.g1_urdf)
-    command = CartesianDeltaCommand(
-        right_delta_m=args.right_delta_m,
-        left_delta_m=args.left_delta_m,
-        duration_seconds=args.duration_seconds,
-        sample_rate_hz=args.sample_rate_hz,
-        maximum_displacement_m=args.maximum_displacement_m,
-        maximum_joint_offset_rad=args.maximum_joint_offset_rad,
-        maximum_joint_velocity_rad_s=args.maximum_joint_velocity_rad_s,
-    )
-    result = G1CartesianCommandInterface(planner).plan(
-        command,
-        previous,
+    common = {
+        "duration_seconds": args.duration_seconds,
+        "sample_rate_hz": args.sample_rate_hz,
+        "maximum_displacement_m": args.maximum_displacement_m,
+        "maximum_joint_offset_rad": args.maximum_joint_offset_rad,
+        "maximum_joint_velocity_rad_s": args.maximum_joint_velocity_rad_s,
+    }
+    interface = G1CartesianCommandInterface(planner)
+    workspaces = (
         CartesianWorkspace(args.left_workspace_min_m, args.left_workspace_max_m),
         CartesianWorkspace(args.right_workspace_min_m, args.right_workspace_max_m),
     )
+    if args.right_target_m is not None:
+        command = CartesianPositionCommand(
+            right_target_m=args.right_target_m,
+            left_target_m=None,
+            **common,
+        )
+        result = interface.plan_position(command, previous, *workspaces)
+    else:
+        command = CartesianDeltaCommand(
+            right_delta_m=args.right_delta_m,
+            left_delta_m=args.left_delta_m,
+            **common,
+        )
+        result = interface.plan(command, previous, *workspaces)
     if args.summary_only:
         result = {key: value for key, value in result.items() if key != "samples"}
     print(json.dumps({"publishes_commands": False,

@@ -6,6 +6,7 @@ import numpy as np
 from handshake.cartesian_arm_ik import G1CartesianArmIK
 from handshake.cartesian_command import (
     CartesianDeltaCommand,
+    CartesianPositionCommand,
     CartesianWorkspace,
     G1CartesianCommandInterface,
 )
@@ -96,6 +97,46 @@ class G1CartesianArmIKTests(unittest.TestCase):
                 CartesianWorkspace(tuple(left[:3, 3] - margin), tuple(left[:3, 3] + margin)),
                 CartesianWorkspace(tuple(right[:3, 3] - margin), tuple(right[:3, 3] + margin)),
             )
+
+    def test_absolute_world_target_preserves_orientation_and_left_hand(self):
+        left, right = self.ik.forward_kinematics(self.initial)
+        target = tuple(right[:3, 3] + np.array([0.001, 0.0, 0.0]))
+        margin = np.array([0.02, 0.02, 0.02])
+        result = G1CartesianCommandInterface(self.ik).plan_position(
+            CartesianPositionCommand(
+                right_target_m=target,
+                duration_seconds=2.0,
+                sample_rate_hz=50.0,
+                maximum_displacement_m=0.01,
+                maximum_joint_offset_rad=0.01,
+                maximum_joint_velocity_rad_s=0.01,
+            ),
+            self.initial,
+            CartesianWorkspace(tuple(left[:3, 3] - margin), tuple(left[:3, 3] + margin)),
+            CartesianWorkspace(tuple(right[:3, 3] - margin), tuple(right[:3, 3] + margin)),
+        )
+        self.assertEqual(result["command"]["type"], "absolute_position")
+        self.assertTrue(np.allclose(result["command"]["right_target_m"], target))
+        self.assertLess(result["command"]["left_displacement_m"], 1e-12)
+        self.assertAlmostEqual(result["command"]["right_displacement_m"], 0.001)
+
+    def test_absolute_target_rejects_displacement_over_limit(self):
+        left, right = self.ik.forward_kinematics(self.initial)
+        margin = np.array([0.05, 0.05, 0.05])
+        with self.assertRaisesRegex(RuntimeError, "target displacement exceeds"):
+            G1CartesianCommandInterface(self.ik).plan_position(
+                CartesianPositionCommand(
+                    right_target_m=tuple(right[:3, 3] + np.array([0.011, 0.0, 0.0])),
+                    maximum_displacement_m=0.01,
+                ),
+                self.initial,
+                CartesianWorkspace(tuple(left[:3, 3] - margin), tuple(left[:3, 3] + margin)),
+                CartesianWorkspace(tuple(right[:3, 3] - margin), tuple(right[:3, 3] + margin)),
+            )
+
+    def test_absolute_target_requires_at_least_one_hand(self):
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            CartesianPositionCommand()
 
 
 if __name__ == "__main__":

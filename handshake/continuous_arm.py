@@ -47,9 +47,12 @@ class ContinuousArmConfig:
     def validate(self) -> None:
         if not 50.0 <= self.sample_rate_hz <= 250.0:
             raise ValueError("sample rate must be between 50 and 250 Hz")
-        for name in ("acquire_seconds", "raise_seconds", "return_seconds", "release_seconds"):
+        for name in ("acquire_seconds", "release_seconds"):
             if not 0.5 <= getattr(self, name) <= 10.0:
                 raise ValueError(f"{name} must be between 0.5 and 10 seconds")
+        for name in ("raise_seconds", "return_seconds"):
+            if not 0.5 <= getattr(self, name) <= 30.0:
+                raise ValueError(f"{name} must be between 0.5 and 30 seconds")
         if not 0.1 <= self.settle_seconds <= 2.0:
             raise ValueError("settle_seconds must be between 0.1 and 2 seconds")
         if self.settle_timeout_seconds < self.settle_seconds:
@@ -306,6 +309,7 @@ class ContinuousArmController:
         settled_since: Optional[float] = None
         zeros = {index: 0.0 for index in ARM_JOINT_INDICES}
         period = 1.0 / self.config.sample_rate_hz
+        tick = 0
         while self.clock() - started <= self.config.settle_timeout_seconds:
             positions, velocities, _ = self._check_state()
             self._send(target, zeros, 1.0)
@@ -321,7 +325,9 @@ class ContinuousArmController:
             if settled_since is not None and now - settled_since >= self.config.settle_seconds:
                 self.event("phase_finished", {"phase": phase, "settled_seconds": now - settled_since})
                 return
-            self.sleep(period)
+            tick += 1
+            deadline = started + tick * period
+            self.sleep(max(0.0, deadline - self.clock()))
         raise RuntimeError(f"{phase} failed to settle")
 
     def raise_arm(self, offsets_rad: Mapping[int, float]) -> None:
@@ -411,6 +417,8 @@ class ContinuousArmController:
         self.event("phase_started", {"phase": self.phase})
         deadline = self.clock() + self.config.internal_return_timeout_seconds
         period = 1.0 / self.config.sample_rate_hz
+        polling_started = self.clock()
+        tick = 0
         while True:
             self._send(initial, zeros, 0.0)
             sport, sport_ns = self.sport_supplier()
@@ -431,7 +439,9 @@ class ContinuousArmController:
                     "authority weight reached zero but internal controller did not return "
                     f"to ({self.config.required_fsm_id}, {self.config.required_fsm_mode})"
                 )
-            self.sleep(period)
+            tick += 1
+            polling_deadline = polling_started + tick * period
+            self.sleep(max(0.0, polling_deadline - self.clock()))
         self.phase = "released"
         self.event(
             "arm_released",

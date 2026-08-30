@@ -91,11 +91,13 @@ class EvidenceSession:
         if not self.ready:
             raise RuntimeError(self.camera.error or "evidence session is not ready")
 
-    def command(self, source: str, command: Mapping[str, Any]) -> None:
+    def command(self, source: str, command: Mapping[str, Any]) -> Dict[str, Any]:
         """Record command intent before a separate actuator layer publishes it."""
         self.require_ready()
-        if not self.run.record("commands", source, dict(command)):
+        payload = dict(command)
+        if not self.run.record("commands", source, payload):
             raise RuntimeError("command evidence could not be queued")
+        return payload
 
     def event(self, event: str, details: Optional[Mapping[str, Any]] = None) -> None:
         if not self.run.record(

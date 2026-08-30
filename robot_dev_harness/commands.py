@@ -24,8 +24,9 @@ class EvidenceBackedCommandTransport:
         self.transport = transport
 
     def send(self, command: Mapping[str, Any]) -> Any:
-        payload = dict(command)
-        self.session.command(self.source, payload)
+        # Use the session's single pre-send snapshot for transport too, avoiding
+        # a second mapping copy in every command tick.
+        payload = self.session.command(self.source, command)
         try:
             return self.transport(payload)
         except BaseException as exc:

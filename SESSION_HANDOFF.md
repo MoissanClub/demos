@@ -1,6 +1,141 @@
 # Session Handoff
 
-Last updated: 2026-08-30 (Asia/Shanghai)
+Last updated: 2026-08-31 (Asia/Shanghai)
+
+## Current pause point: exact Cartesian request ready; camera disconnected
+
+The operator approved one future right-arm attempt to the pelvis-fixed endpoint
+`[0.04, -0.20, -0.10] m`, accepting a narrowly expanded workspace for this
+specific target. The trajectory is 20 seconds outbound and 20 seconds return at
+250 Hz. The immutable request is:
+
+```text
+reviewed_cartesian_requests/right_004_-020_-010_20s.json
+SHA-256: db03793cbced9f920fb953d918693138158095fafd124e8ed4175a04d115fde1
+attempt: right-004-neg020-neg010-20s-a
+```
+
+Latest offline plan from the 2026-08-31 read-only pose:
+
+- displacement: `0.045663 m`;
+- maximum joint change: `0.209644 rad`;
+- maximum planned joint velocity: `0.019654 rad/s`;
+- right endpoint translation residual: `0.004507 m`;
+- right orientation residual: `0.014102 rad`;
+- bounded RNEA torque output; focused and full offline tests pass.
+
+The operator moved the verifier camera to ground level behind the robot's right
+arm, looking toward that arm, and confirmed the robot was secured, the path was
+clear, and an emergency-stop operator was ready. During camera gating,
+`/dev/video6` initially negotiated 30 fps through `v4l2-ctl`, then disappeared.
+OpenCV could not open it and subsequently no `/dev/video*` node existed. No
+publisher was constructed and no motion command was issued.
+
+Physical execution remains hard-disabled in
+`run_g1_reviewed_cartesian_test.py`: `PHYSICAL_EXECUTION_ENABLED = False` and
+`AUTHORIZED_REQUEST_SHA256 = None`. Do not enable either gate until the camera
+is reconnected and the new view is inspected.
+
+### Tomorrow's exact resume sequence
+
+1. Reconnect/power the verifier camera and enumerate `/dev/video*`; do not
+   assume it returns as `/dev/video6`.
+2. Capture and inspect a read-only frame from the exact OpenCV backend/device
+   that the evidence session will use. Require the full right-arm path and
+   clearance to be visible from the new ground-level view.
+3. Confirm again that the robot is secured, the path/exclusion zone is clear,
+   and a dedicated emergency-stop operator is ready; yesterday's confirmation
+   is not a substitute for a fresh physical-session check.
+4. Run the normal read-only preflight immediately before the attempt and
+   require sustained `(FSM 501, mode 0)`, `mode_machine=5`, and stationary arms.
+5. Verify the request's canonical SHA-256 and rerun the offline plan from the
+   fresh pose. Reject if the current pose/target leaves the request workspace,
+   if any gate fails, or if the camera cannot record reliably.
+6. Only after reviewing the fresh plan, set `AUTHORIZED_REQUEST_SHA256` to the
+   exact hash above and `PHYSICAL_EXECUTION_ENABLED = True`. Run exactly one
+   attempt with every CLI confirmation and the verified camera device.
+7. Immediately restore both hard-disable values after the process exits,
+   regardless of result. Then verify checksums, analyze phase timing/telemetry,
+   inspect exact synchronized visual frames, and run an independent read-only
+   `(501, 0)` postflight before deciding whether the result passed.
+
+The full offline suite passed 144/144 immediately before this handoff, and
+`git diff --check` passed. BrainCo hardware remained disconnected and is not
+required for this arm-only, no-contact attempt.
+
+## 2026-08-31 continuation: preflight and command timing
+
+The normal read-only preflight passed with 107 sport-state samples all at
+`(FSM 501, mode 0)`, 148 low-state samples all at `mode_machine=5`, zero record
+drops, and no write error. Maximum arm velocity was `0.03682 rad/s` and maximum
+arm position span was `0.0000839 rad`. Evidence:
+
+```text
+telemetry/standalone_arm/sequence_20260830T222022Z.jsonl
+```
+
+No publisher or robot command was constructed. The DDS reader message printed
+after the success result occurred during shutdown and did not invalidate the
+completed recording.
+
+Offline analysis localized retry B's `238.76 Hz` aggregate command rate to
+relative-sleep scheduling outside the main trajectories. The acquire, outbound,
+return, and release trajectories were already approximately 250 Hz; the old
+settle, raised-hold, and internal-return phases were only 129--137 Hz. A typical
+full evidence command is 1,281 bytes and serialized in approximately 57 us on
+PC2, so JSON serialization was not the limiting factor.
+
+The pending worktree changes use absolute-deadline scheduling for settle,
+raised-hold, and internal-return commands; preserve the complete pre-send
+command record; remove one redundant synchronous mapping copy; add phase-aware
+timing to `analyze_g1_cartesian_run.py`; and add deterministic timing/evidence
+regressions. The full offline suite passes 132/132 and `git diff --check` passes.
+Physical execution remains hard-disabled.
+
+BrainCo touch telemetry is the next hardware gate. The existing standalone
+BrainCo code already reads and records `brainco.touch` and `brainco.motor`, but
+no BrainCo serial device was present at the 2026-08-31 pause point: no
+`/dev/serial`, `/dev/ttyUSB*`, or `/dev/ttyACM*` entry was available, and no
+BrainCo/stark process was running. Before live routing can be validated, the
+operator must connect/enable the BrainCo USB device and confirm exclusive serial
+ownership. Do not enable touch sensors, move the hand, command contact, or
+enable a physical arm attempt merely to satisfy this telemetry gate.
+
+## Reusable absolute Cartesian coordinate solution
+
+The pending worktree now supports an absolute world-frame hand coordinate, not
+only a relative delta. `CartesianPositionCommand` holds the current hand
+orientation, keeps the untargeted hand fixed, and enforces the reviewed
+workspace, Cartesian displacement, joint-offset, trajectory-velocity, joint
+limit, IK residual, model mapping, and RNEA torque gates.
+
+`create_g1_cartesian_request.py` writes a new immutable request containing the
+exact target, both hand workspaces, and all motion limits, and prints its
+canonical SHA-256. `plan_g1_cartesian_request.py` verifies that hash and solves
+the request offline without importing Unitree DDS. The evidence-backed runtime
+`run_g1_reviewed_cartesian_test.py` now accepts such a request, recomputes the
+plan from a fresh read-only snapshot, requires planning-to-execution joint and
+endpoint continuity, moves out and returns, settles, and releases authority.
+
+The physical runtime remains doubly disabled: `PHYSICAL_EXECUTION_ENABLED` is
+false and `AUTHORIZED_REQUEST_SHA256` is unset. Even when reviewed code changes
+the first gate, only the single compiled exact request hash can pass the second.
+The CLI also requires the same expected hash plus fresh area-clear, emergency
+stop, `(501, 0)`, and plan-review confirmations.
+
+An end-to-end offline workflow based on the latest read-only pose successfully
+planned a 1 mm right-hand world-X target. It requested endpoint
+`[0.0147186622, -0.2366612566, -0.1070986541] m`, held the left hand fixed,
+required only `0.0028298 rad` maximum joint offset and `0.0006633 rad/s`
+maximum planned joint velocity, and produced `0.0000251 m` right translation
+residual. This was planning validation only and did not authorize or publish
+motion. The full offline suite passes 140/140 and `git diff --check` passes.
+
+The next required operator input is the desired absolute world-frame target
+coordinate (which hand and X/Y/Z in meters). A physical session additionally
+requires a newly reviewed workspace around the current pose, camera view,
+exclusion zone, emergency-stop operator, fresh `(501, 0)` preflight, and
+single-attempt authorization for the resulting request hash.
 
 ## Chinese recording announcements implemented
 

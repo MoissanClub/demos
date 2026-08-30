@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
 import math
 from pathlib import Path
@@ -127,6 +128,25 @@ def main(argv=None):
         (current - previous) / 1e9
         for previous, current in zip(command_times, command_times[1:])
     ]
+    command_times_by_phase = defaultdict(list)
+    for row in commands:
+        command_times_by_phase[row["data"]["controller_phase"]].append(
+            row["monotonic_ns"]
+        )
+    command_phase_timing = {}
+    for phase, timestamps in command_times_by_phase.items():
+        intervals = [
+            (current - previous) / 1e9
+            for previous, current in zip(timestamps, timestamps[1:])
+        ]
+        command_phase_timing[phase] = {
+            "count": len(timestamps),
+            "mean_rate_hz": (
+                (len(timestamps) - 1) / ((timestamps[-1] - timestamps[0]) / 1e9)
+                if len(timestamps) > 1 else None
+            ),
+            "maximum_interval_seconds": max(intervals) if intervals else None,
+        }
     fsm_states = sorted({
         (int(row["data"]["value"]["fsm_id"]), int(row["data"]["value"]["fsm_mode"]))
         for row in sport
@@ -148,6 +168,7 @@ def main(argv=None):
             "contiguous": command_sequences == list(range(len(commands))),
             "mean_rate_hz": (len(commands) - 1) / ((command_times[-1] - command_times[0]) / 1e9),
             "maximum_interval_seconds": max(command_intervals),
+            "phase_timing": command_phase_timing,
         },
         "measured_motion": {
             "maximum_right_x_displacement_m": maximum_x_sample["delta"][0],

@@ -108,6 +108,48 @@ placeholder or broad bounds to make a rejected target pass. The retired
 `--execute-cartesian-10cm-right-x-test` flag remains hard-disabled after its
 one successful verification. This planning interface does not re-authorize it.
 
+### Absolute Cartesian coordinate workflow
+
+For an absolute world-frame coordinate, first create a new immutable request.
+The request fixes the target, both reviewed workspaces, trajectory duration,
+sample rate, Cartesian displacement limit, joint-offset limit, and joint-speed
+limit. Existing request files are never overwritten.
+
+```bash
+python create_g1_cartesian_request.py \
+  --attempt-id UNIQUE_ATTEMPT_ID \
+  --output reviewed_request.json \
+  --right-target-m X Y Z \
+  --left-workspace-min-m LX_MIN LY_MIN LZ_MIN \
+  --left-workspace-max-m LX_MAX LY_MAX LZ_MAX \
+  --right-workspace-min-m RX_MIN RY_MIN RZ_MIN \
+  --right-workspace-max-m RX_MAX RY_MAX RZ_MAX \
+  --maximum-displacement-m 0.01 \
+  --maximum-joint-offset-rad 0.05 \
+  --maximum-joint-velocity-rad-s 0.02 \
+  --duration-seconds 8
+```
+
+The command prints the request's canonical SHA-256. Plan it against a recent
+read-only 14-joint arm snapshot without importing Unitree DDS:
+
+```bash
+python plan_g1_cartesian_request.py \
+  --request reviewed_request.json \
+  --expect-request-sha256 SHA256 \
+  --initial-arm-q Q15 Q16 Q17 Q18 Q19 Q20 Q21 Q22 Q23 Q24 Q25 Q26 Q27 Q28
+```
+
+`run_g1_reviewed_cartesian_test.py` is the corresponding evidence-backed
+runtime. It recomputes IK from a fresh planning snapshot, requires the live
+execution pose and both hand endpoints to remain continuous with that snapshot,
+records command intent before transport, moves out and returns, settles, and
+releases authority. It accepts only the exact request hash compiled into
+`AUTHORIZED_REQUEST_SHA256`, and it is currently hard-disabled by
+`PHYSICAL_EXECUTION_ENABLED = False`. A reviewer must authorize one exact hash
+for one attempt and disable it immediately afterward. Creating or planning a
+request never authorizes physical movement.
+
 ## Read-only mode and service preflight
 
 Before another physical attempt, query the current locomotion FSM and arm
