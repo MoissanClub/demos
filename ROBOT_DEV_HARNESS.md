@@ -80,3 +80,33 @@ Future projects should add telemetry sources through `RunArtifacts.record()`
 and keep their project-specific event detection outside this package. Movement
 commands must remain in separately reviewed control code. Starting evidence
 capture does not authorize robot motion.
+
+## Feature request: Chinese recording announcements
+
+Add a reusable audio-announcement hook to the evidence-session lifecycle. Every
+video-recording transition must produce these exact Chinese TTS announcements:
+
+- after video capture becomes active and the first frame is confirmed:
+  `机器人开始移动` ("robot starts moving");
+- whenever an active video capture stops, including normal completion, abort,
+  or cleanup after failure: `机器人停止移动` ("robot stops moving").
+
+Acceptance requirements:
+
+- Keep the hook project-neutral; do not import handshake policy into
+  `robot_dev_harness`.
+- Initialize and health-check the configured audio backend before a physical
+  session becomes command-ready.
+- Do not let TTS RPC latency block the camera thread or real-time control loop.
+- Timestamp the announcement request, backend acceptance/result, and any error
+  in the run's `events` telemetry stream.
+- Never omit the stop announcement merely because the run aborted. Emit it once
+  if and only if video capture became active.
+- Prevent duplicate start/stop announcements during idempotent cleanup.
+- Treat a missing or failed start announcement as an evidence-readiness failure
+  for physical-motion sessions. Preserve the partial run and do not construct a
+  command publisher.
+- If the stop announcement fails after motion, preserve the run as incomplete,
+  record the failure, and continue safe controller cleanup without delay.
+- Add dry-run/fake-backend tests covering normal completion, startup failure,
+  abort, duplicate finalization, and audio-backend failure.

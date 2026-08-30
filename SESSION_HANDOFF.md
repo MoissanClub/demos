@@ -71,6 +71,11 @@ The run's `verification.md` has the final pass assessment. All checksums pass.
 6. Keep physical execution disabled until a new exact target, runtime plan,
    safety confirmation, camera view, and single-attempt authorization are
    reviewed. Do not progress directly to human contact or repeated shaking.
+7. Implement the project-neutral recording-announcement feature request in
+   `ROBOT_DEV_HARNESS.md`: say `机器人开始移动` after the first video frame and
+   `机器人停止移动` whenever an active recording stops. The audio lifecycle must
+   be evidence-recorded, nonblocking for control, failure-aware, and tested
+   before it is used in another physical session.
 
 ## 2026-08-30 recorded 1 cm attempt A: no command published
 
