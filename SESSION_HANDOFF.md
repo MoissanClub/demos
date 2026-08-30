@@ -78,19 +78,20 @@ The run's `verification.md` has the final pass assessment. All checksums pass.
 
 ### Tomorrow's resume sequence
 
-1. Run only the normal read-only preflight and require `(501, 0)`.
-2. Run the full offline suite and `git diff --check`.
-3. Verify the retry-B artifact checksums and review its `verification.md`.
-4. Improve command-loop evidence performance before another physical attempt:
+1. Improve the harness: the Visual review section of verification.md should explain the specific frame(s) that the mentioned observation were made.
+2. Run only the normal read-only preflight and require `(501, 0)`.
+3. Run the full offline suite and `git diff --check`.
+4. Verify the retry-B artifact checksums and review its `verification.md`.
+5. Improve command-loop evidence performance before another physical attempt:
    retry B averaged `238.76 Hz` rather than the configured `250 Hz`, with a
    `14.95 ms` maximum interval. Preserve evidence-first ordering while reducing
    synchronous command serialization or payload size; validate timing offline.
-5. Add or explicitly route BrainCo touch telemetry before any human-contact or
+6. Add or explicitly route BrainCo touch telemetry before any human-contact or
    handshake test. Do not infer touch from arm or IMU data.
-6. Keep physical execution disabled until a new exact target, runtime plan,
+7. Keep physical execution disabled until a new exact target, runtime plan,
    safety confirmation, camera view, and single-attempt authorization are
    reviewed. Do not progress directly to human contact or repeated shaking.
-7. Implement the project-neutral recording-announcement feature request in
+8. Implement the project-neutral recording-announcement feature request in
    `ROBOT_DEV_HARNESS.md`: say `机器人开始移动` after the first video frame and
    `机器人停止移动` whenever an active recording stops. The audio lifecycle must
    be evidence-recorded, nonblocking for control, failure-aware, and tested
