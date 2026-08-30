@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from g1_standalone_arm_sequence import ArmSdkCommandSink, LowStateMonitor, _load_sdk_path
+from g1_recording_announcer import UnitreeRecordingAnnouncer
 from handshake.cartesian_arm_ik import G1CartesianArmIK
 from handshake.cartesian_command import (
     CartesianDeltaCommand, CartesianWorkspace, G1CartesianCommandInterface,
@@ -161,7 +162,9 @@ def main(argv=None) -> int:
 
         monitor = LowStateMonitor(adapter)
         camera = OpenCVMjpegCamera(run, device=args.camera_device, fps=30.0)
-        session = EvidenceSession(run, camera, [monitor])
+        session = EvidenceSession(
+            run, camera, [monitor], announcer=UnitreeRecordingAnnouncer(run),
+        )
         session.start()
         controller = ContinuousArmController(
             monitor.latest, monitor.latest_sport, None, event, planner.feedforward,

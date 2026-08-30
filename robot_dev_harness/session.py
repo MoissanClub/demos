@@ -22,6 +22,13 @@ class EvidenceCamera(Protocol):
     def stop(self) -> Dict[str, Any]: ...
 
 
+class RecordingAnnouncer(Protocol):
+    def start(self) -> None: ...
+    def recording_started(self) -> None: ...
+    def recording_stopped(self) -> None: ...
+    def close(self) -> None: ...
+
+
 class EvidenceSession:
     """Coordinate recording readiness without knowing how a robot is controlled.
 
@@ -35,13 +42,18 @@ class EvidenceSession:
         run: RunArtifacts,
         camera: EvidenceCamera,
         telemetry_sources: Iterable[TelemetrySource] = (),
+        announcer: Optional[RecordingAnnouncer] = None,
     ) -> None:
         self.run = run
         self.camera = camera
         self.telemetry_sources = list(telemetry_sources)
+        self.announcer = announcer
         self._started_sources = []
         self._active = False
         self._finalized = False
+        self._video_started = False
+        self._stop_announced = False
+        self._announcer_closed = False
         self.camera_summary: Optional[Dict[str, Any]] = None
         self.final_status: Optional[str] = None
         self.final_reason: Optional[str] = None
@@ -54,16 +66,25 @@ class EvidenceSession:
         if self._active or self._finalized:
             raise RuntimeError("evidence session cannot be started in its current state")
         try:
+            if self.announcer is not None:
+                self.announcer.start()
             for source in self.telemetry_sources:
                 source.start()
                 self._started_sources.append(source)
             self.camera.start()
+            self._video_started = True
             if not self.camera.active or self.camera.error:
                 raise RuntimeError(self.camera.error or "camera is not active after startup")
+            if self.announcer is not None:
+                self.announcer.recording_started()
             self._active = True
             self.event("evidence_session_ready", {"commands_recorded": 0})
         except BaseException:
+            if self.camera.active:
+                self.camera.stop()
+            self._announce_stopped()
             self._close_sources()
+            self._close_announcer()
             raise
 
     def require_ready(self) -> None:
@@ -95,6 +116,7 @@ class EvidenceSession:
         try:
             if self.camera.active:
                 self.camera_summary = self.camera.stop()
+            self._announce_stopped()
             if self.camera_summary:
                 self._extract_boundary_evidence(self.camera_summary)
             if self._active:
@@ -105,6 +127,7 @@ class EvidenceSession:
         finally:
             self._active = False
             self._close_sources()
+            self._close_announcer()
             metadata = dict(result_metadata or {})
             if self.camera_summary:
                 metadata["camera"] = self.camera_summary
@@ -149,3 +172,13 @@ class EvidenceSession:
                     validity="error",
                 )
         self._started_sources.clear()
+
+    def _announce_stopped(self) -> None:
+        if self._video_started and not self._stop_announced and self.announcer is not None:
+            self.announcer.recording_stopped()
+            self._stop_announced = True
+
+    def _close_announcer(self) -> None:
+        if self.announcer is not None and not self._announcer_closed:
+            self.announcer.close()
+            self._announcer_closed = True

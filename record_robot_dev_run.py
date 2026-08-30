@@ -12,6 +12,7 @@ from robot_dev_harness.adapters import LegacyTelemetryAdapter
 from robot_dev_harness.run_artifacts import RunArtifacts
 from robot_dev_harness.opencv_camera import OpenCVMjpegCamera
 from robot_dev_harness.session import EvidenceSession
+from g1_recording_announcer import UnitreeRecordingAnnouncer
 
 
 def parse_args(argv=None):
@@ -27,6 +28,7 @@ def parse_args(argv=None):
     parser.add_argument("--camera-height", type=int, default=480)
     parser.add_argument("--camera-fps", type=float, default=30.0)
     parser.add_argument("--minimum-free-gib", type=float, default=1.0)
+    parser.add_argument("--speaker-id", type=int, default=0)
     parser.add_argument("--confirm-area-clear", action="store_true")
     args = parser.parse_args(argv)
     if not 1.0 <= args.duration_seconds <= 600.0:
@@ -82,7 +84,8 @@ def main(argv=None) -> int:
 
         ChannelFactoryInitialize(0, args.network_interface)
         monitor = LowStateMonitor(adapter)
-        session = EvidenceSession(run, camera, [monitor])
+        announcer = UnitreeRecordingAnnouncer(run, speaker_id=args.speaker_id)
+        session = EvidenceSession(run, camera, [monitor], announcer=announcer)
         session.start()
         session.event("read_only_recording_started", {
             "publishes_robot_commands": False,

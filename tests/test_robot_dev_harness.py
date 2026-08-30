@@ -12,6 +12,9 @@ from robot_dev_harness.evidence import load_frame_timestamps, nearest_frame
 from robot_dev_harness.session import EvidenceSession
 from robot_dev_harness.commands import EvidenceBackedCommandTransport
 from record_robot_dev_run import parse_args
+from g1_recording_announcer import (
+    START_PHRASE, STOP_PHRASE, UnitreeRecordingAnnouncer,
+)
 
 
 class FakeClock:
@@ -154,6 +157,26 @@ class FakeCamera:
         return {}
 
 
+class FakeAnnouncer:
+    def __init__(self, fail_start_announcement=False):
+        self.events = []
+        self.fail_start_announcement = fail_start_announcement
+
+    def start(self):
+        self.events.append("ready")
+
+    def recording_started(self):
+        self.events.append("recording_started")
+        if self.fail_start_announcement:
+            raise RuntimeError("announcement failed")
+
+    def recording_stopped(self):
+        self.events.append("recording_stopped")
+
+    def close(self):
+        self.events.append("closed")
+
+
 class EvidenceSessionTests(unittest.TestCase):
     def test_session_requires_camera_before_command_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -223,6 +246,75 @@ class EvidenceSessionTests(unittest.TestCase):
                 for line in run.path("telemetry/events.jsonl").read_text().splitlines()
             ]
             self.assertIn("command_transport_failed", events)
+
+    def test_announcer_follows_video_lifecycle_once(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = RunArtifactsTests().create_run(temporary)
+            announcer = FakeAnnouncer()
+            session = EvidenceSession(run, FakeCamera(), announcer=announcer)
+            session.start()
+            session.finalize("complete", "done", "# Verification\n")
+            session.finalize("complete", "done", "# Verification\n")
+            self.assertEqual(
+                announcer.events,
+                ["ready", "recording_started", "recording_stopped", "closed"],
+            )
+
+    def test_start_announcement_failure_stops_video_and_prevents_readiness(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = RunArtifactsTests().create_run(temporary)
+            camera = FakeCamera()
+            announcer = FakeAnnouncer(fail_start_announcement=True)
+            session = EvidenceSession(run, camera, announcer=announcer)
+            with self.assertRaisesRegex(RuntimeError, "announcement failed"):
+                session.start()
+            self.assertFalse(camera.active)
+            self.assertFalse(session.ready)
+            self.assertEqual(
+                announcer.events,
+                ["ready", "recording_started", "recording_stopped", "closed"],
+            )
+            session.finalize("incomplete", "announcement_failed", "# Verification\n")
+
+
+class FakeTtsClient:
+    def __init__(self, result=0):
+        self.result = result
+        self.calls = []
+
+    def TtsMaker(self, phrase, speaker_id):
+        self.calls.append((phrase, speaker_id))
+        return self.result
+
+
+class UnitreeAnnouncerTests(unittest.TestCase):
+    def test_exact_chinese_phrases_are_sent_once(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = RunArtifactsTests().create_run(temporary)
+            client = FakeTtsClient()
+            announcer = UnitreeRecordingAnnouncer(run, speaker_id=3)
+            announcer.client = client
+            announcer.recording_started()
+            announcer.recording_started()
+            announcer.recording_stopped()
+            announcer.recording_stopped()
+            self.assertEqual(client.calls, [(START_PHRASE, 3), (STOP_PHRASE, 3)])
+            run.finalize("complete", "test_complete", "# Verification\n")
+
+    def test_tts_failure_is_fail_closed_and_recorded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = RunArtifactsTests().create_run(temporary)
+            announcer = UnitreeRecordingAnnouncer(run)
+            announcer.client = FakeTtsClient(result=7)
+            with self.assertRaisesRegex(RuntimeError, "return value 7"):
+                announcer.recording_started()
+            run.finalize("incomplete", "tts_failed", "# Verification\n")
+            events = [
+                json.loads(line) for line in
+                run.path("telemetry/events.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual(events[-1]["validity"], "error")
+            self.assertEqual(events[-1]["data"]["phrase"], START_PHRASE)
 
 
 if __name__ == "__main__":

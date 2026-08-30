@@ -81,9 +81,9 @@ and keep their project-specific event detection outside this package. Movement
 commands must remain in separately reviewed control code. Starting evidence
 capture does not authorize robot motion.
 
-## Feature request: Chinese recording announcements
+## Chinese recording announcements
 
-Add a reusable audio-announcement hook to the evidence-session lifecycle. Every
+The reusable audio-announcement hook is implemented in the evidence-session lifecycle. Every
 video-recording transition must produce these exact Chinese TTS announcements:
 
 - after video capture becomes active and the first frame is confirmed:
@@ -110,3 +110,10 @@ Acceptance requirements:
   record the failure, and continue safe controller cleanup without delay.
 - Add dry-run/fake-backend tests covering normal completion, startup failure,
   abort, duplicate finalization, and audio-backend failure.
+
+The first read-only PC2 rehearsal succeeded with both Unitree TTS calls returning
+zero. Evidence is stored under:
+
+```text
+artifacts/robot_dev_runs/20260830T042807.515987Z_chinese-recording-announcement-rehearsal/
+```

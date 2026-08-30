@@ -2,6 +2,25 @@
 
 Last updated: 2026-08-30 (Asia/Shanghai)
 
+## Chinese recording announcements implemented
+
+`EvidenceSession` now requires the injected recording announcer to say
+`机器人开始移动` after the first video frame and before a session becomes
+command-ready. It says `机器人停止移动` exactly once after every active recording
+stops, including failure cleanup. Unitree TTS requests and results are recorded
+in the run event stream; a start-announcement failure prevents publisher
+readiness.
+
+The read-only rehearsal completed successfully with both TTS calls returning
+zero, 95 video frames at measured 29.999 fps, and valid checksums:
+
+```text
+artifacts/robot_dev_runs/20260830T042807.515987Z_chinese-recording-announcement-rehearsal/
+```
+
+The Cartesian physical attempt remains hard-disabled. A repeat must use a new
+attempt ID and fresh physical-session safety confirmation; do not reuse retry B.
+
 ## Current pause point: recorded 1 cm Cartesian test passed
 
 Guarded retry `20260830-right-x-1cm-b` completed the full right-arm Cartesian
