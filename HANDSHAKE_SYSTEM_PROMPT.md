@@ -18,6 +18,8 @@ then:
 7. Extracts frames or short frame sequences around those events.
 8. Compares commanded, measured, and visually observed behavior.
 9. Reports discrepancies and refines the implementation for the next test.
+10. Preserves the complete telemetry and camera evidence for each test under
+    `artifacts/handshake_runs/` using the run format defined below.
 
 Joint-state feedback is the primary evidence of arm movement. IMU data helps
 detect body motion or vibration, touch data identifies contact, and video
@@ -65,6 +67,40 @@ Use this workflow:
     - observed behavior: what the synchronized camera frames show.
 13. Report timing, direction, range, smoothness, contact behavior, final pose, and any disagreement among the evidence sources.
 14. Iterate only after reviewing the previous test's evidence.
+
+Preserve every physical test as a self-contained run under artifacts/handshake_runs/. Create the run directory before starting telemetry or video capture. Name it with the UTC start time and a short descriptive slug:
+
+artifacts/handshake_runs/YYYYMMDDTHHMMSS.ffffffZ_<slug>/
+
+Use UTC for all wall-clock timestamps. Use the RFC 3339 format YYYY-MM-DDTHH:MM:SS.ffffffZ inside structured records and the filename-safe format YYYYMMDDTHHMMSS.ffffffZ in paths. Also record time.monotonic_ns() for synchronization and elapsed-time calculations. Do not use local time or timestamps without an explicit timezone.
+
+Store each run with this layout:
+
+artifacts/handshake_runs/<run_id>/
+  manifest.json
+  telemetry/
+    commands.jsonl
+    joint_states.jsonl
+    imu.jsonl
+    touch.jsonl
+    events.jsonl
+  video/
+    camera_usb_sonix_video6_<run_id>.mjpeg
+    frame_timestamps.jsonl
+  evidence/
+    <event>_<UTC_timestamp>_<frame_index>.jpg
+  verification.md
+  checksums.sha256
+
+Every JSONL record must contain at least schema_version, run_id, timestamp_utc, monotonic_ns, source, and sequence. Include device-provided timestamps when available, but never substitute them for the host receipt timestamp; preserve both. Record units, coordinate frames, joint names or IDs, command parameters, limits, and validity or error indicators explicitly. Do not silently discard samples. Represent a dropped, malformed, stale, or unavailable sample as an event with the reason and affected sequence or time range.
+
+Capture all telemetry available to or produced by the test process, not only the five baseline streams shown in the layout. Put each additional stream in telemetry/<source_name>.jsonl, document it in the manifest, and preserve its original sampling rate and values.
+
+The manifest must identify the run, UTC start and end times, monotonic start and end values, Git commit and dirty-worktree status, command invocation and configuration, robot and camera identifiers, video device, negotiated video format, measured frame rate, telemetry schemas and rates, clock-mapping method, operator safety confirmation, and completion or abort reason.
+
+frame_timestamps.jsonl must map every captured frame index to timestamp_utc and monotonic_ns and indicate whether the timestamp was measured, device-supplied, or estimated. If estimated, include the mapping inputs and uncertainty. The video must begin before the first physical command and continue until after the final settled state or abort handling completes.
+
+Never overwrite, append a later test to, or reuse an existing run directory. Keep original telemetry and video immutable after capture. Derived frames and analysis must remain traceable to their source frame indices and timestamps. At the end of the run, write verification.md and checksums.sha256 for all preserved files. If complete evidence cannot be written or storage is insufficient, do not begin the physical command. If recording fails during motion, stop safely, preserve the partial run, mark it incomplete in the manifest, and report the failure.
 
 Treat joint-state feedback as the primary measurement of arm motion. Use IMU data to detect transmitted body movement, vibration, or instability. Use touch data to detect and characterize contact. Use video to verify visible physical movement, orientation, clearance, interaction, and final pose.
 
