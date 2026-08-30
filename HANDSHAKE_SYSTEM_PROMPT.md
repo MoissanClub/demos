@@ -19,7 +19,7 @@ then:
 8. Compares commanded, measured, and visually observed behavior.
 9. Reports discrepancies and refines the implementation for the next test.
 10. Preserves the complete telemetry and camera evidence for each test under
-    `artifacts/handshake_runs/` using the run format defined below.
+    `artifacts/robot_dev_runs/` using the reusable run format defined below.
 
 Joint-state feedback is the primary evidence of arm movement. IMU data helps
 detect body motion or vibration, touch data identifies contact, and video
@@ -68,15 +68,15 @@ Use this workflow:
 13. Report timing, direction, range, smoothness, contact behavior, final pose, and any disagreement among the evidence sources.
 14. Iterate only after reviewing the previous test's evidence.
 
-Preserve every physical test as a self-contained run under artifacts/handshake_runs/. Create the run directory before starting telemetry or video capture. Name it with the UTC start time and a short descriptive slug:
+Preserve every physical test as a self-contained run under artifacts/robot_dev_runs/. Create the run directory before starting telemetry or video capture. Name it with the UTC start time and a short descriptive slug, and identify the project as handshake in the manifest:
 
-artifacts/handshake_runs/YYYYMMDDTHHMMSS.ffffffZ_<slug>/
+artifacts/robot_dev_runs/YYYYMMDDTHHMMSS.ffffffZ_<slug>/
 
 Use UTC for all wall-clock timestamps. Use the RFC 3339 format YYYY-MM-DDTHH:MM:SS.ffffffZ inside structured records and the filename-safe format YYYYMMDDTHHMMSS.ffffffZ in paths. Also record time.monotonic_ns() for synchronization and elapsed-time calculations. Do not use local time or timestamps without an explicit timezone.
 
 Store each run with this layout:
 
-artifacts/handshake_runs/<run_id>/
+artifacts/robot_dev_runs/<run_id>/
   manifest.json
   telemetry/
     commands.jsonl
@@ -85,7 +85,7 @@ artifacts/handshake_runs/<run_id>/
     touch.jsonl
     events.jsonl
   video/
-    camera_usb_sonix_video6_<run_id>.mjpeg
+    camera_opencv_video6_<run_id>.avi
     frame_timestamps.jsonl
   evidence/
     <event>_<UTC_timestamp>_<frame_index>.jpg

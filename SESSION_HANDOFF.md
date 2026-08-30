@@ -27,12 +27,16 @@ Offline work resumed successfully:
   hard-disabled;
 - the expanded focused suite passes 56/56.
 
-Next: review and commit this offline slice, then design the timestamped run
-artifact recorder described in `HANDSHAKE_SYSTEM_PROMPT.md`. Do not connect the
-new command interface to physical publication until `(501, 0)` is restored, a
+The reusable `robot_dev_harness` continuation now implements the timestamped
+run-artifact recorder described in `HANDSHAKE_SYSTEM_PROMPT.md`. A read-only
+PC2 rehearsal captured synchronized low state, sport state, and `/dev/video6`
+at a measured 30.009 fps with per-frame host monotonic timestamps, zero dropped
+telemetry records, and valid SHA-256 checksums. See `ROBOT_DEV_HARNESS.md` for
+the project-neutral interface. Do not connect the new command interface to
+physical publication until `(501, 0)` is restored, a
 fresh target and workspace are reviewed, synchronized telemetry/video capture
-is implemented, the operator confirms the physical test session is safe, and
-exactly one guarded attempt is explicitly authorized.
+passes its pre-command health checks, the operator confirms the physical test
+session is safe, and exactly one guarded attempt is explicitly authorized.
 
 ## Current authoritative handoff: successful Cartesian verification
 
