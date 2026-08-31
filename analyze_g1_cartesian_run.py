@@ -92,7 +92,9 @@ def main(argv=None):
             vector_norm(a - b for a, b in zip(imu["accelerometer"], baseline_accel)),
         )
 
-    outbound_end = event_times["return_started"]
+    outbound_end = event_times.get(
+        "return_started", event_times.get("authority_release_started", samples[-1]["monotonic_ns"])
+    )
     outbound = [sample for sample in samples if sample["monotonic_ns"] <= outbound_end]
     maximum_x_sample = max(outbound, key=lambda sample: sample["delta"][0])
     active = [
@@ -107,10 +109,15 @@ def main(argv=None):
     active_velocity_sample = max(active, key=lambda sample: sample["maximum_velocity_rad_s"])
     release_velocity_sample = max(release, key=lambda sample: sample["maximum_velocity_rad_s"])
     active_torque_sample = max(active, key=lambda sample: sample["maximum_torque_nm"])
+    return_reference_event = (
+        "return_settle_finished"
+        if "return_settle_finished" in event_times
+        else "authority_release_started"
+    )
     return_settled_sample = min(
         samples,
         key=lambda sample: abs(
-            sample["monotonic_ns"] - event_times["return_settle_finished"]
+            sample["monotonic_ns"] - event_times[return_reference_event]
         ),
     )
     final_sample = samples[-1]
@@ -171,6 +178,8 @@ def main(argv=None):
             "phase_timing": command_phase_timing,
         },
         "measured_motion": {
+            "completed_return": "return_settle_finished" in event_times,
+            "return_reference_event": return_reference_event,
             "maximum_right_x_displacement_m": maximum_x_sample["delta"][0],
             "right_y_at_maximum_x_m": maximum_x_sample["delta"][1],
             "right_z_at_maximum_x_m": maximum_x_sample["delta"][2],

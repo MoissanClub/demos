@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Mapping, Optional, Sequence, Tuple
+from typing import Callable, Mapping, Optional, Sequence, Tuple
 
 from handshake.cartesian_arm_ik import G1CartesianArmIK
 
@@ -179,6 +179,8 @@ class G1CartesianCommandInterface:
         initial: Mapping[int, float],
         left_workspace: CartesianWorkspace,
         right_workspace: CartesianWorkspace,
+        minimum_peak_speed: bool = False,
+        max_ik_candidates: int = 5,
     ):
         left_initial, right_initial = self.planner.forward_kinematics(initial)
         left_target, right_target = left_initial.copy(), right_initial.copy()
@@ -209,11 +211,17 @@ class G1CartesianCommandInterface:
                 f"{command.maximum_displacement_m:.4f} m for {violations}"
             )
 
-        result = self.planner.plan_trajectory(
+        plan_method = (
+            self.planner.plan_minimum_peak_speed_trajectory
+            if minimum_peak_speed else self.planner.plan_trajectory
+        )
+        extra = {"max_candidates": max_ik_candidates} if minimum_peak_speed else {}
+        result = plan_method(
             left_target, right_target, initial, command.duration_seconds,
             command.sample_rate_hz,
             max_joint_step_rad=command.maximum_joint_offset_rad,
             max_joint_velocity_rad_s=command.maximum_joint_velocity_rad_s,
+            **extra,
         )
         translation_error = result["endpoint"]["translation_error_m"]
         rotation_error = result["endpoint"]["rotation_error_rad"]
@@ -243,3 +251,64 @@ class G1CartesianCommandInterface:
                       "maximum": list(right_workspace.maximum_m)},
         }
         return result
+
+
+@dataclass(frozen=True)
+class CoordinateMoveSafety:
+    """Fixed reviewed bounds configured around the two-input move function."""
+
+    left_workspace: CartesianWorkspace
+    right_workspace: CartesianWorkspace
+    maximum_displacement_m: float = 0.05
+    maximum_joint_offset_rad: float = 0.22
+    maximum_joint_velocity_rad_s: float = 0.075
+    sample_rate_hz: float = 250.0
+    max_ik_candidates: int = 5
+
+
+class G1CoordinateMover:
+    """Plan and execute a right-hand coordinate with a maximum time budget.
+
+    Hardware-specific state reading and guarded execution are injected at
+    construction. Consequently the movement call itself has the requested
+    two-input shape while retaining explicit, reviewed safety configuration.
+    The executor receives the complete evidence-ready trajectory and is the
+    only component allowed to publish it.
+    """
+
+    def __init__(
+        self,
+        planner: G1CartesianArmIK,
+        read_arm_positions: Callable[[], Mapping[int, float]],
+        execute_trajectory: Callable[[Mapping[str, object]], None],
+        safety: CoordinateMoveSafety,
+    ):
+        self.planner = planner
+        self.read_arm_positions = read_arm_positions
+        self.execute_trajectory = execute_trajectory
+        self.safety = safety
+
+    def move(self, coordinate_m: Sequence[float], maximum_time_seconds: float):
+        """Move the right hand, choosing the IK with least peak joint speed."""
+        coordinate = _vector3(coordinate_m, "right Cartesian coordinate")
+        if not math.isfinite(float(maximum_time_seconds)):
+            raise ValueError("maximum time must be finite")
+        initial = dict(self.read_arm_positions())
+        command = CartesianPositionCommand(
+            right_target_m=coordinate,
+            duration_seconds=float(maximum_time_seconds),
+            sample_rate_hz=self.safety.sample_rate_hz,
+            maximum_displacement_m=self.safety.maximum_displacement_m,
+            maximum_joint_offset_rad=self.safety.maximum_joint_offset_rad,
+            maximum_joint_velocity_rad_s=self.safety.maximum_joint_velocity_rad_s,
+        )
+        plan = G1CartesianCommandInterface(self.planner).plan_position(
+            command,
+            initial,
+            self.safety.left_workspace,
+            self.safety.right_workspace,
+            minimum_peak_speed=True,
+            max_ik_candidates=self.safety.max_ik_candidates,
+        )
+        self.execute_trajectory(plan)
+        return plan

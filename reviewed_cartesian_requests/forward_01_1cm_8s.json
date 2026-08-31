@@ -1,0 +1,45 @@
+{
+  "attempt_id": "forward-01-1cm-a",
+  "command": {
+    "duration_seconds": 8.0,
+    "frame": "world",
+    "left_target_m": null,
+    "maximum_displacement_m": 0.1,
+    "maximum_joint_offset_rad": 0.4,
+    "maximum_joint_velocity_rad_s": 0.075,
+    "right_target_m": [
+      0.0225,
+      -0.2359,
+      -0.1077
+    ],
+    "sample_rate_hz": 250.0,
+    "type": "absolute_position"
+  },
+  "schema_version": "1.0",
+  "workspace_m": {
+    "left": {
+      "maximum": [
+        0.05,
+        0.27,
+        -0.07
+      ],
+      "minimum": [
+        -0.02,
+        0.2,
+        -0.14
+      ]
+    },
+    "right": {
+      "maximum": [
+        0.115,
+        -0.19,
+        -0.07
+      ],
+      "minimum": [
+        0.0,
+        -0.27,
+        -0.14
+      ]
+    }
+  }
+}

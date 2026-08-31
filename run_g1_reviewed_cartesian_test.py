@@ -121,6 +121,7 @@ def main(argv=None) -> int:
             return_seconds=command.duration_seconds,
             release_seconds=2.0,
             settle_timeout_seconds=30.0,
+            pose_tolerance_rad=0.005,
             max_offset_rad=command.maximum_joint_offset_rad,
             max_measured_velocity_rad_s=0.25,
             max_tracking_error_rad=0.03,
@@ -158,6 +159,7 @@ def main(argv=None) -> int:
         planning_pose = dict(planning_controller.initial_pose)
         plan = G1CartesianCommandInterface(planner).plan_position(
             command, planning_pose, request.left_workspace, request.right_workspace,
+            minimum_peak_speed=True, max_ik_candidates=5,
         )
         planning_monitor.close()
         planning_monitor = None

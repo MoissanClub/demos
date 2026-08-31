@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -8,6 +9,8 @@ from handshake.cartesian_command import (
     CartesianDeltaCommand,
     CartesianPositionCommand,
     CartesianWorkspace,
+    CoordinateMoveSafety,
+    G1CoordinateMover,
     G1CartesianCommandInterface,
 )
 from handshake.standalone_arm import ARM_JOINT_INDICES
@@ -137,6 +140,75 @@ class G1CartesianArmIKTests(unittest.TestCase):
     def test_absolute_target_requires_at_least_one_hand(self):
         with self.assertRaisesRegex(ValueError, "at least one"):
             CartesianPositionCommand()
+
+
+class MinimumPeakSpeedSelectionTests(unittest.TestCase):
+    def test_multistart_selects_smallest_maximum_joint_delta(self):
+        ik = object.__new__(G1CartesianArmIK)
+        ik.np = np
+        ik.robot = SimpleNamespace(model=SimpleNamespace(
+            lowerPositionLimit=np.full(14, -2.0),
+            upperPositionLimit=np.full(14, 2.0),
+        ))
+        initial = dict.fromkeys(ARM_JOINT_INDICES, 0.0)
+
+        def solve(_left, _right, _previous, max_joint_step_rad, initial_guess):
+            seed = np.asarray([initial_guess[i] for i in ARM_JOINT_INDICES])
+            # Candidate 2 (negative elbow seed) has the smallest max delta.
+            delta = 0.10 if seed[10] > 0 else 0.04 if seed[10] < 0 else 0.08
+            positions = dict(initial)
+            positions[25] = delta
+            return {
+                "positions_rad": positions,
+                "feedforward_torques_nm": dict(initial),
+                "maximum_joint_step_rad": delta,
+                "translation_error_m": {"left": 0.0, "right": 0.0},
+                "rotation_error_rad": {"left": 0.0, "right": 0.0},
+            }
+
+        ik.solve = solve
+        result = ik.solve_minimum_peak_speed(
+            np.eye(4), np.eye(4), initial, 10.0, max_candidates=3,
+        )
+        selection = result["ik_selection"]
+        self.assertEqual(selection["selected_candidate_index"], 2)
+        self.assertAlmostEqual(selection["predicted_peak_joint_speed_rad_s"], 0.0075)
+
+    def test_two_input_mover_plans_then_executes_selected_trajectory(self):
+        initial = dict.fromkeys(ARM_JOINT_INDICES, 0.0)
+
+        class FakePlanner:
+            def forward_kinematics(self, _positions):
+                left = np.eye(4)
+                right = np.eye(4)
+                left[:3, 3] = (0.0, 0.2, 0.0)
+                right[:3, 3] = (0.0, -0.2, 0.0)
+                return left, right
+
+            def plan_minimum_peak_speed_trajectory(
+                self, _left, _right, _initial, maximum_time, sample_rate,
+                **kwargs,
+            ):
+                return {
+                    "duration_seconds": maximum_time,
+                    "sample_rate_hz": sample_rate,
+                    "endpoint": {
+                        "translation_error_m": {"left": 0.0, "right": 0.0},
+                        "rotation_error_rad": {"left": 0.0, "right": 0.0},
+                    },
+                    "ik_selection": {"selected_candidate_index": 1},
+                }
+
+        executed = []
+        safety = CoordinateMoveSafety(
+            left_workspace=CartesianWorkspace((-0.1, 0.1, -0.1), (0.1, 0.3, 0.1)),
+            right_workspace=CartesianWorkspace((-0.1, -0.3, -0.1), (0.1, -0.1, 0.1)),
+            maximum_displacement_m=0.05,
+        )
+        mover = G1CoordinateMover(FakePlanner(), lambda: initial, executed.append, safety)
+        plan = mover.move((0.01, -0.2, 0.0), 8.0)
+        self.assertEqual(plan["duration_seconds"], 8.0)
+        self.assertEqual(executed, [plan])
 
 
 if __name__ == "__main__":

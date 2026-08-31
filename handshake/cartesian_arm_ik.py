@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Dict, Mapping, Tuple
+from typing import Dict, Mapping, Optional, Tuple
 
 from handshake.arm_feedforward import (
     G1_ARM_JOINT_NAMES, G1_LOCKED_JOINT_NAMES, G1ArmGravityFeedforward,
@@ -46,14 +46,18 @@ class G1CartesianArmIK:
                 self.robot.data.oMf[self.right_frame].homogeneous.copy())
 
     def solve(self, left_target, right_target, previous: Mapping[int, float],
-              max_joint_step_rad: float = 0.10) -> Dict[str, object]:
+              max_joint_step_rad: float = 0.10,
+              initial_guess: Optional[Mapping[int, float]] = None) -> Dict[str, object]:
         np = self.np
         q0 = self._vector(previous, "previous positions")
         left = self._transform(left_target, "left target")
         right = self._transform(right_target, "right target")
         if not 0.001 <= max_joint_step_rad <= 0.40:
             raise ValueError("maximum joint step must be between 0.001 and 0.40 rad")
-        q = q0.copy()
+        q = (
+            self._vector(initial_guess, "IK initial guess").copy()
+            if initial_guess is not None else q0.copy()
+        )
         translation_weight = math.sqrt(50.0)
         weights = np.diag([translation_weight] * 3 + [1.0] * 3 +
                           [translation_weight] * 3 + [1.0] * 3)
@@ -111,6 +115,103 @@ class G1CartesianArmIK:
                 "translation_error_m": {"left": left_error, "right": right_error},
                 "rotation_error_rad": {"left": left_rotation_error, "right": right_rotation_error}}
 
+    def solve_minimum_peak_speed(
+        self,
+        left_target,
+        right_target,
+        previous: Mapping[int, float],
+        maximum_time_seconds: float,
+        max_joint_step_rad: float = 0.40,
+        max_candidates: int = 5,
+    ) -> Dict[str, object]:
+        """Choose the valid multi-start IK result with the lowest peak speed.
+
+        A quintic point-to-point trajectory has peak blend derivative 1.875,
+        so minimizing ``max(abs(q1-q0))`` also minimizes its peak joint speed
+        for a fixed time budget. Candidate zero is the normal continuity solve;
+        the remaining deterministic seeds explore alternate right-arm elbow and
+        shoulder-yaw branches without changing the requested hand poses.
+        """
+        if not 1.0 <= maximum_time_seconds <= 30.0:
+            raise ValueError("maximum time must be between 1 and 30 seconds")
+        if not 1 <= max_candidates <= 9:
+            raise ValueError("IK candidate count must be between 1 and 9")
+        q0 = self._vector(previous, "previous positions")
+        seed_specs = (
+            (),
+            ((10, 0.08),), ((10, -0.08),),
+            ((9, 0.08),), ((9, -0.08),),
+            ((11, 0.08),), ((11, -0.08),),
+            ((13, 0.08),), ((13, -0.08),),
+        )
+        candidates = []
+        failures = []
+        for candidate_index, changes in enumerate(seed_specs[:max_candidates]):
+            seed = q0.copy()
+            for local_index, offset in changes:
+                seed[local_index] += offset
+            seed = self.np.clip(
+                seed, self.robot.model.lowerPositionLimit,
+                self.robot.model.upperPositionLimit,
+            )
+            try:
+                endpoint = self.solve(
+                    left_target, right_target, previous,
+                    max_joint_step_rad=max_joint_step_rad,
+                    initial_guess=dict(zip(ARM_JOINT_INDICES, map(float, seed))),
+                )
+            except RuntimeError as exc:
+                failures.append({"candidate_index": candidate_index, "reason": str(exc)})
+                continue
+            delta = max(
+                abs(float(endpoint["positions_rad"][joint]) - float(previous[joint]))
+                for joint in ARM_JOINT_INDICES
+            )
+            peak_speed = 1.875 * delta / maximum_time_seconds
+            candidates.append((peak_speed, delta, candidate_index, endpoint))
+        if not candidates:
+            raise RuntimeError(f"no valid IK candidates: {failures}")
+        peak_speed, delta, candidate_index, endpoint = min(
+            candidates, key=lambda item: (item[0], item[1], item[2])
+        )
+        return {
+            **endpoint,
+            "ik_selection": {
+                "method": "deterministic_multistart_minimum_peak_joint_speed",
+                "attempted_candidates": min(max_candidates, len(seed_specs)),
+                "valid_candidates": len(candidates),
+                "selected_candidate_index": candidate_index,
+                "maximum_time_seconds": maximum_time_seconds,
+                "predicted_peak_joint_speed_rad_s": peak_speed,
+                "maximum_joint_delta_rad": delta,
+                "failures": failures,
+            },
+        }
+
+    def plan_minimum_peak_speed_trajectory(
+        self, left_target, right_target, initial: Mapping[int, float],
+        maximum_time_seconds: float, sample_rate_hz: float = 250.0,
+        max_joint_step_rad: float = 0.40,
+        max_joint_velocity_rad_s: float = 0.075,
+        max_candidates: int = 5,
+    ):
+        """Plan at the time budget using the valid IK with least peak speed."""
+        if not 50.0 <= sample_rate_hz <= 250.0:
+            raise ValueError("sample rate must be between 50 and 250 Hz")
+        if not 0.001 <= max_joint_step_rad <= 0.40:
+            raise ValueError("maximum joint step must be between 0.001 and 0.40 rad")
+        if not 0.001 <= max_joint_velocity_rad_s <= 0.075:
+            raise ValueError("maximum joint velocity must be between 0.001 and 0.075 rad/s")
+        endpoint = self.solve_minimum_peak_speed(
+            left_target, right_target, initial, maximum_time_seconds,
+            max_joint_step_rad=max_joint_step_rad,
+            max_candidates=max_candidates,
+        )
+        return self._time_parameterize(
+            endpoint, initial, maximum_time_seconds, sample_rate_hz,
+            max_joint_step_rad, max_joint_velocity_rad_s,
+        )
+
     def plan_trajectory(self, left_target, right_target, initial: Mapping[int, float],
                         duration_seconds: float = 2.0, sample_rate_hz: float = 250.0,
                         max_joint_step_rad: float = 0.40,
@@ -128,6 +229,15 @@ class G1CartesianArmIK:
             left_target, right_target, initial,
             max_joint_step_rad=max_joint_step_rad,
         )
+        return self._time_parameterize(
+            endpoint, initial, duration_seconds, sample_rate_hz,
+            max_joint_step_rad, max_joint_velocity_rad_s,
+        )
+
+    def _time_parameterize(
+        self, endpoint, initial, duration_seconds, sample_rate_hz,
+        max_joint_step_rad, max_joint_velocity_rad_s,
+    ):
         q0 = self._vector(initial, "initial positions")
         q1 = self._vector(endpoint["positions_rad"], "endpoint positions")
         count = int(round(duration_seconds * sample_rate_hz)) + 1

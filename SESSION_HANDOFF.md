@@ -1,6 +1,74 @@
 # Session Handoff
 
-Last updated: 2026-08-31 (Asia/Shanghai)
+Last updated: 2026-09-01 (Asia/Shanghai)
+
+## Current pause point: forward scenario campaign stopped at scenario 2
+
+The operator confirmed the robot was secured, the arm space was clear, and a
+dedicated emergency-stop operator was present. Ten positive-world-X forward
+scenarios were defined in
+`reviewed_cartesian_requests/forward_scenario_suite.json`. Runtime planning now
+uses deterministic multi-start IK and selects the valid solution with the least
+predicted maximum joint speed. Physical execution remains hard-disabled.
+
+Scenario 1 (`forward-01-1cm-a`) passed. It measured `0.009931 m` forward with
+only `-0.000272 / -0.000011 m` lateral/vertical deviation, returned within
+`0.000165 / -0.000067 / -0.000054 m`, and passed synchronized video review and
+independent `(501, 0)` postflight.
+
+Scenario 2 (`forward-02-2cm-a`) reached `0.019696 m` forward but failed the
+tightened `0.005 rad` joint settle gate after its 30-second timeout. No normal
+return phase began. Controlled abort release completed, native control returned
+the arm, synchronized video showed smooth unobstructed motion and return, and
+independent postflight passed `(501, 0)`. The campaign stopped as designed;
+scenarios 3--10 were not physically executed. Full telemetry and video findings
+are appended to each run's `verification.md` and protected by regenerated
+checksums:
+
+```text
+artifacts/robot_dev_runs/20260831T172733.272821Z_forward-01-1cm-a/
+artifacts/robot_dev_runs/20260831T172941.860239Z_forward-02-2cm-a/
+```
+
+## Current pause point: physical right-arm motion completed; target did not pass
+
+One guarded attempt, `right-004-neg020-neg010-21s-b`, physically moved the
+right arm outbound and returned it after the original 20-second request failed
+its offline `0.0200 rad/s` trajectory-velocity gate. The replacement retained
+the same endpoint, workspaces, and limits but used 21-second outbound and return
+phases. Its canonical request is:
+
+```text
+reviewed_cartesian_requests/right_004_-020_-010_21s.json
+SHA-256: bacb3dc04332adc685132d7333e81f6b72c02835751d70a7cf26691320cb51b9
+```
+
+The controller completed outbound, return, settle, authority release, and
+native return. An independent read-only postflight passed `(FSM 501, mode 0)`.
+The exact target assessment did not pass: maximum measured right-hand
+displacement was `[0.028431, 0.031754, 0.003393] m` relative to the initial
+endpoint, rather than fully achieving the requested absolute endpoint. Return
+settled to `[0.000281, 0.001754, -0.000403] m` Cartesian residual and
+`0.007934 rad` maximum joint residual.
+
+All 12,057 command records were contiguous at `250.003 Hz`; maximum active
+velocity was `0.171806 rad/s`, maximum release velocity was `0.302194 rad/s`,
+and maximum active torque was `2.50 Nm`. Video recorded 1,474 frames at
+`30.013 fps`; sampled synchronized frames showed smooth unobstructed outbound
+and return motion with no visible contact. Zero evidence records dropped.
+
+The artifact final status is `incomplete` solely because the stop-recording
+Unitree TTS call returned code 3104 after motion and release completed. Checksums
+pass and the detailed assessment is in:
+
+```text
+artifacts/robot_dev_runs/20260831T170801.300133Z_right-004-neg020-neg010-21s-b/
+telemetry/standalone_arm/sequence_20260831T170924Z.jsonl
+```
+
+Physical execution is hard-disabled again. Do not repeat this attempt. Before
+another physical request, investigate why measured Cartesian tracking did not
+reach the planned endpoint and separately diagnose TTS return code 3104.
 
 ## Current pause point: exact Cartesian request ready; camera disconnected
 
