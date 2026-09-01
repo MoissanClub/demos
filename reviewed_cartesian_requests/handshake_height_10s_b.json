@@ -1,0 +1,30 @@
+{
+  "attempt_id": "handshake-height-10s-b",
+  "command": {
+    "duration_seconds": 10.0,
+    "frame": "world",
+    "left_target_m": null,
+    "maximum_displacement_m": 0.38,
+    "maximum_joint_offset_rad": 0.9,
+    "maximum_joint_velocity_rad_s": 0.16,
+    "right_orientation": [
+      [0.9699637621144938, -0.05025091796536112, -0.23800240634988692],
+      [0.024334468711127016, 0.9935665714186933, -0.11060425756655887],
+      [0.2420292003400526, 0.10149045966464565, 0.964946398915408]
+    ],
+    "right_target_m": [0.26494623532205364, -0.13767233513037483, 0.11005643789607092],
+    "sample_rate_hz": 250.0,
+    "type": "absolute_position"
+  },
+  "schema_version": "1.0",
+  "workspace_m": {
+    "left": {
+      "maximum": [0.06, 0.28, -0.06],
+      "minimum": [-0.03, 0.19, -0.15]
+    },
+    "right": {
+      "maximum": [0.29, -0.11, 0.14],
+      "minimum": [-0.02, -0.27, -0.14]
+    }
+  }
+}

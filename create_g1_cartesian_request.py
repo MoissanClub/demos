@@ -13,6 +13,7 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--right-target-m", nargs=3, type=float, required=True,
                         metavar=("X", "Y", "Z"))
+    parser.add_argument("--right-orientation", nargs=9, type=float)
     parser.add_argument("--left-workspace-min-m", nargs=3, type=float, required=True)
     parser.add_argument("--left-workspace-max-m", nargs=3, type=float, required=True)
     parser.add_argument("--right-workspace-min-m", nargs=3, type=float, required=True)
@@ -31,6 +32,11 @@ def main(argv=None):
         attempt_id=args.attempt_id,
         command=CartesianPositionCommand(
             right_target_m=args.right_target_m,
+            right_orientation=(
+                tuple(tuple(args.right_orientation[row * 3 + column] for column in range(3))
+                      for row in range(3))
+                if args.right_orientation is not None else None
+            ),
             duration_seconds=args.duration_seconds,
             sample_rate_hz=args.sample_rate_hz,
             maximum_displacement_m=args.maximum_displacement_m,

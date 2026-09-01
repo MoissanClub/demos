@@ -13,6 +13,7 @@ from handshake.cartesian_arm_ik import G1CartesianArmIK
 
 
 Vector3 = Tuple[float, float, float]
+Matrix3 = Tuple[Vector3, Vector3, Vector3]
 
 
 def _vector3(values: Sequence[float], label: str) -> Vector3:
@@ -22,6 +23,25 @@ def _vector3(values: Sequence[float], label: str) -> Vector3:
     if not all(math.isfinite(value) for value in result):
         raise ValueError(f"{label} contains a non-finite value")
     return result  # type: ignore[return-value]
+
+
+def _rotation3(values: Sequence[Sequence[float]], label: str) -> Matrix3:
+    if len(values) != 3:
+        raise ValueError(f"{label} must contain exactly three rows")
+    rows = tuple(_vector3(row, f"{label} row") for row in values)
+    for i in range(3):
+        for j in range(3):
+            dot = sum(rows[k][i] * rows[k][j] for k in range(3))
+            if not math.isclose(dot, 1.0 if i == j else 0.0, abs_tol=1e-5):
+                raise ValueError(f"{label} must be orthonormal")
+    determinant = (
+        rows[0][0] * (rows[1][1] * rows[2][2] - rows[1][2] * rows[2][1])
+        - rows[0][1] * (rows[1][0] * rows[2][2] - rows[1][2] * rows[2][0])
+        + rows[0][2] * (rows[1][0] * rows[2][1] - rows[1][1] * rows[2][0])
+    )
+    if not math.isclose(determinant, 1.0, abs_tol=1e-5):
+        raise ValueError(f"{label} determinant must be one")
+    return rows  # type: ignore[return-value]
 
 
 @dataclass(frozen=True)
@@ -83,6 +103,7 @@ class CartesianPositionCommand:
 
     right_target_m: Optional[Vector3] = None
     left_target_m: Optional[Vector3] = None
+    right_orientation: Optional[Matrix3] = None
     duration_seconds: float = 2.0
     sample_rate_hz: float = 250.0
     maximum_displacement_m: float = 0.02
@@ -102,6 +123,13 @@ class CartesianPositionCommand:
                 self, "left_target_m",
                 _vector3(self.left_target_m, "left Cartesian target"),
             )
+        if self.right_orientation is not None:
+            if self.right_target_m is None:
+                raise ValueError("right orientation requires a right Cartesian target")
+            object.__setattr__(
+                self, "right_orientation",
+                _rotation3(self.right_orientation, "right target orientation"),
+            )
         _validate_motion_bounds(self)
 
 
@@ -113,12 +141,12 @@ def _validate_motion_bounds(command) -> None:
     )
     if not all(math.isfinite(float(value)) for value in values):
         raise ValueError("Cartesian motion bounds must be finite")
-    if not 0.001 <= command.maximum_displacement_m <= 0.10:
-        raise ValueError("maximum Cartesian displacement must be between 0.001 and 0.10 m")
-    if not 0.001 <= command.maximum_joint_offset_rad <= 0.40:
-        raise ValueError("maximum joint offset must be between 0.001 and 0.40 rad")
-    if not 0.001 <= command.maximum_joint_velocity_rad_s <= 0.075:
-        raise ValueError("maximum joint velocity must be between 0.001 and 0.075 rad/s")
+    if not 0.001 <= command.maximum_displacement_m <= 0.40:
+        raise ValueError("maximum Cartesian displacement must be between 0.001 and 0.40 m")
+    if not 0.001 <= command.maximum_joint_offset_rad <= 0.90:
+        raise ValueError("maximum joint offset must be between 0.001 and 0.90 rad")
+    if not 0.001 <= command.maximum_joint_velocity_rad_s <= 0.20:
+        raise ValueError("maximum joint velocity must be between 0.001 and 0.20 rad/s")
     if not 1.0 <= command.duration_seconds <= 30.0:
         raise ValueError("trajectory duration must be between 1 and 30 seconds")
     if not 50.0 <= command.sample_rate_hz <= 250.0:
@@ -188,6 +216,8 @@ class G1CartesianCommandInterface:
             left_target[:3, 3] = command.left_target_m
         if command.right_target_m is not None:
             right_target[:3, 3] = command.right_target_m
+        if command.right_orientation is not None:
+            right_target[:3, :3] = command.right_orientation
 
         left_workspace.require_contains(left_initial[:3, 3], "initial left hand")
         right_workspace.require_contains(right_initial[:3, 3], "initial right hand")
@@ -238,6 +268,10 @@ class G1CartesianCommandInterface:
             "type": "absolute_position",
             "left_target_m": list(map(float, left_target[:3, 3])),
             "right_target_m": list(map(float, right_target[:3, 3])),
+            "right_orientation": (
+                [list(map(float, row)) for row in command.right_orientation]
+                if command.right_orientation is not None else None
+            ),
             "left_displacement_m": displacements["left"],
             "right_displacement_m": displacements["right"],
             "maximum_displacement_m": command.maximum_displacement_m,

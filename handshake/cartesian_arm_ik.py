@@ -52,8 +52,8 @@ class G1CartesianArmIK:
         q0 = self._vector(previous, "previous positions")
         left = self._transform(left_target, "left target")
         right = self._transform(right_target, "right target")
-        if not 0.001 <= max_joint_step_rad <= 0.40:
-            raise ValueError("maximum joint step must be between 0.001 and 0.40 rad")
+        if not 0.001 <= max_joint_step_rad <= 0.90:
+            raise ValueError("maximum joint step must be between 0.001 and 0.90 rad")
         q = (
             self._vector(initial_guess, "IK initial guess").copy()
             if initial_guess is not None else q0.copy()
@@ -198,10 +198,10 @@ class G1CartesianArmIK:
         """Plan at the time budget using the valid IK with least peak speed."""
         if not 50.0 <= sample_rate_hz <= 250.0:
             raise ValueError("sample rate must be between 50 and 250 Hz")
-        if not 0.001 <= max_joint_step_rad <= 0.40:
-            raise ValueError("maximum joint step must be between 0.001 and 0.40 rad")
-        if not 0.001 <= max_joint_velocity_rad_s <= 0.075:
-            raise ValueError("maximum joint velocity must be between 0.001 and 0.075 rad/s")
+        if not 0.001 <= max_joint_step_rad <= 0.90:
+            raise ValueError("maximum joint step must be between 0.001 and 0.90 rad")
+        if not 0.001 <= max_joint_velocity_rad_s <= 0.20:
+            raise ValueError("maximum joint velocity must be between 0.001 and 0.20 rad/s")
         endpoint = self.solve_minimum_peak_speed(
             left_target, right_target, initial, maximum_time_seconds,
             max_joint_step_rad=max_joint_step_rad,
@@ -221,10 +221,10 @@ class G1CartesianArmIK:
             raise ValueError("trajectory duration must be between 1 and 30 seconds")
         if not 50.0 <= sample_rate_hz <= 250.0:
             raise ValueError("sample rate must be between 50 and 250 Hz")
-        if not 0.001 <= max_joint_step_rad <= 0.40:
-            raise ValueError("maximum joint step must be between 0.001 and 0.40 rad")
-        if not 0.001 <= max_joint_velocity_rad_s <= 0.075:
-            raise ValueError("maximum joint velocity must be between 0.001 and 0.075 rad/s")
+        if not 0.001 <= max_joint_step_rad <= 0.90:
+            raise ValueError("maximum joint step must be between 0.001 and 0.90 rad")
+        if not 0.001 <= max_joint_velocity_rad_s <= 0.20:
+            raise ValueError("maximum joint velocity must be between 0.001 and 0.20 rad/s")
         endpoint = self.solve(
             left_target, right_target, initial,
             max_joint_step_rad=max_joint_step_rad,

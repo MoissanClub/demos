@@ -30,6 +30,7 @@ def main(argv=None):
     planner = G1CartesianArmIK(args.g1_urdf)
     result = G1CartesianCommandInterface(planner).plan_position(
         request.command, initial, request.left_workspace, request.right_workspace,
+        minimum_peak_speed=True, max_ik_candidates=5,
     )
     if not args.include_samples:
         result = {key: value for key, value in result.items() if key != "samples"}

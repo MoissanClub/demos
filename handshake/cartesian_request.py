@@ -27,20 +27,23 @@ class CartesianMoveRequest:
             raise ValueError("attempt_id must be a safe lowercase identifier")
 
     def as_dict(self) -> Dict[str, Any]:
+        command = {
+            "type": "absolute_position",
+            "frame": "world",
+            "right_target_m": self.command.right_target_m,
+            "left_target_m": self.command.left_target_m,
+            "duration_seconds": self.command.duration_seconds,
+            "sample_rate_hz": self.command.sample_rate_hz,
+            "maximum_displacement_m": self.command.maximum_displacement_m,
+            "maximum_joint_offset_rad": self.command.maximum_joint_offset_rad,
+            "maximum_joint_velocity_rad_s": self.command.maximum_joint_velocity_rad_s,
+        }
+        if self.command.right_orientation is not None:
+            command["right_orientation"] = self.command.right_orientation
         return {
             "schema_version": SCHEMA_VERSION,
             "attempt_id": self.attempt_id,
-            "command": {
-                "type": "absolute_position",
-                "frame": "world",
-                "right_target_m": self.command.right_target_m,
-                "left_target_m": self.command.left_target_m,
-                "duration_seconds": self.command.duration_seconds,
-                "sample_rate_hz": self.command.sample_rate_hz,
-                "maximum_displacement_m": self.command.maximum_displacement_m,
-                "maximum_joint_offset_rad": self.command.maximum_joint_offset_rad,
-                "maximum_joint_velocity_rad_s": self.command.maximum_joint_velocity_rad_s,
-            },
+            "command": command,
             "workspace_m": {
                 "left": {
                     "minimum": self.left_workspace.minimum_m,
@@ -82,7 +85,7 @@ class CartesianMoveRequest:
             "sample_rate_hz", "maximum_displacement_m", "maximum_joint_offset_rad",
             "maximum_joint_velocity_rad_s",
         }
-        if set(command) != expected_command:
+        if set(command) not in (expected_command, expected_command | {"right_orientation"}):
             raise ValueError("Cartesian request command has missing or unknown fields")
         workspaces = value["workspace_m"]
         if not isinstance(workspaces, Mapping) or set(workspaces) != {"left", "right"}:
@@ -96,6 +99,7 @@ class CartesianMoveRequest:
             command=CartesianPositionCommand(
                 right_target_m=command["right_target_m"],
                 left_target_m=command["left_target_m"],
+                right_orientation=command.get("right_orientation"),
                 duration_seconds=float(command["duration_seconds"]),
                 sample_rate_hz=float(command["sample_rate_hz"]),
                 maximum_displacement_m=float(command["maximum_displacement_m"]),

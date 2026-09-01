@@ -67,8 +67,8 @@ class ContinuousArmConfig:
             raise ValueError("pose tolerance must be between 0.005 and 0.05 rad")
         if not 0.01 <= self.settle_velocity_rad_s <= 0.2:
             raise ValueError("settle velocity must be between 0.01 and 0.2 rad/s")
-        if not 0.01 <= self.max_offset_rad <= 0.5:
-            raise ValueError("maximum offset must be between 0.01 and 0.5 rad")
+        if not 0.01 <= self.max_offset_rad <= 0.9:
+            raise ValueError("maximum offset must be between 0.01 and 0.9 rad")
         if not self.max_measured_velocity_rad_s <= self.max_release_velocity_rad_s <= 2.0:
             raise ValueError("release velocity limit must be at least the motion limit and at most 2 rad/s")
         if not 0.005 <= self.max_tracking_error_rad <= 0.05:

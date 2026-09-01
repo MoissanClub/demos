@@ -120,6 +120,22 @@ def main(argv=None):
             sample["monotonic_ns"] - event_times[return_reference_event]
         ),
     )
+    raised_reference_event = (
+        "arm_raised" if "arm_raised" in event_times else "raised_settle_started"
+    )
+    raised_sample = min(
+        samples,
+        key=lambda sample: abs(sample["monotonic_ns"] - event_times[raised_reference_event]),
+    )
+    raised_xyz = tuple(
+        float(initial_xyz[i] + raised_sample["delta"][i]) for i in range(3)
+    )
+    manifest = json.loads((args.run / "manifest.json").read_text(encoding="utf-8"))
+    right_target = manifest.get("metadata", {}).get("right_target_m")
+    raised_target_residual = (
+        tuple(float(raised_xyz[i] - right_target[i]) for i in range(3))
+        if right_target is not None else None
+    )
     final_sample = samples[-1]
     return_settled_joint_residual = max(
         abs(return_settled_sample["positions"][index] - initial_positions[index])
@@ -189,6 +205,13 @@ def main(argv=None):
             "maximum_release_velocity_joint": release_velocity_sample["maximum_velocity_joint"],
             "maximum_active_arm_torque_nm": active_torque_sample["maximum_torque_nm"],
             "maximum_active_torque_joint": active_torque_sample["maximum_torque_joint"],
+            "raised_reference_event": raised_reference_event,
+            "raised_right_hand_m": raised_xyz,
+            "raised_right_hand_target_residual_m": raised_target_residual,
+            "raised_right_hand_target_error_norm_m": (
+                vector_norm(raised_target_residual)
+                if raised_target_residual is not None else None
+            ),
             "return_settled_right_hand_residual_m": return_settled_sample["delta"],
             "return_settled_maximum_joint_residual_rad": return_settled_joint_residual,
             "post_native_release_right_hand_residual_m": final_sample["delta"],

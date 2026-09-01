@@ -36,6 +36,42 @@ class CartesianMoveRequestTests(unittest.TestCase):
         self.assertEqual(loaded.sha256, request.sha256)
         self.assertEqual(len(request.sha256), 64)
 
+    def test_right_orientation_round_trips_and_is_hash_addressed(self):
+        request = self.request()
+        oriented = CartesianMoveRequest(
+            attempt_id=request.attempt_id,
+            command=CartesianPositionCommand(
+                right_target_m=request.command.right_target_m,
+                right_orientation=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+                duration_seconds=request.command.duration_seconds,
+                maximum_displacement_m=request.command.maximum_displacement_m,
+                maximum_joint_offset_rad=request.command.maximum_joint_offset_rad,
+                maximum_joint_velocity_rad_s=request.command.maximum_joint_velocity_rad_s,
+            ),
+            left_workspace=request.left_workspace,
+            right_workspace=request.right_workspace,
+        )
+        loaded = CartesianMoveRequest.from_mapping(oriented.as_dict())
+        self.assertEqual(loaded, oriented)
+        self.assertNotEqual(loaded.sha256, request.sha256)
+
+    def test_right_orientation_must_be_a_rotation(self):
+        with self.assertRaisesRegex(ValueError, "orthonormal"):
+            CartesianPositionCommand(
+                right_target_m=(0.02, -0.23, -0.10),
+                right_orientation=((1.0, 0.0, 0.0), (0.0, 2.0, 0.0), (0.0, 0.0, 1.0)),
+            )
+
+    def test_reviewed_handshake_scale_bounds_are_allowed(self):
+        command = CartesianPositionCommand(
+            right_target_m=(0.265, -0.138, 0.110),
+            duration_seconds=10.0,
+            maximum_displacement_m=0.38,
+            maximum_joint_offset_rad=0.9,
+            maximum_joint_velocity_rad_s=0.16,
+        )
+        self.assertEqual(command.maximum_joint_offset_rad, 0.9)
+
     def test_unknown_fields_fail_closed(self):
         value = self.request().as_dict()
         value["command"]["unreviewed_override"] = True

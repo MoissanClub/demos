@@ -1,6 +1,63 @@
 # Session Handoff
 
-Last updated: 2026-09-01 (Asia/Shanghai)
+Last updated: 2026-09-02 (Asia/Shanghai)
+
+## Current pause point: own-IK handshake-height run verified
+
+The operator confirmed a clear arm workspace, standard mode under the gantry,
+and a dedicated emergency-stop operator. The front USB verifier camera was
+validated at 640x480 MJPG and measured approximately 30 fps with the full right
+arm and upper body visible. Independent preflight and postflight checks passed
+`(FSM 501, mode 0)`.
+
+The Cartesian interface now accepts an optional reviewed right-hand rotation,
+validates it as an SO(3) matrix, includes it in the immutable request hash, and
+uses deterministic five-candidate IK selection for the least predicted peak
+joint speed. The reviewed handshake-height target was:
+
+```text
+[0.2649462353, -0.1376723351, 0.1100564379] m
+duration: 10.0 s
+maximum planned joint speed: 0.16 rad/s
+```
+
+Attempt A (`handshake-height-10s-a`) moved smoothly to handshake height and
+held, but was marked aborted because the measured joints did not enter the
+overly strict 0.010 rad settle band within 30 seconds. Controlled authority
+release and native return completed; postflight passed. This attempt must not
+be relabeled as successful.
+
+Attempt B (`handshake-height-10s-b`) used the controller's existing 0.030 rad
+tracking band as its joint settle tolerance and completed the raise, settle,
+one-second hold, 10-second controlled return, return settle, authority release,
+and native-control handoff. The immutable request is:
+
+```text
+reviewed_cartesian_requests/handshake_height_10s_b.json
+SHA-256: e2d25bbe33dbeb7644fdaf6a6b3d0655ece8f0efed5c6b73e3aec86e976e8d12
+```
+
+Measured settled right-hand position was
+`[0.264704, -0.139741, 0.102549] m`, a `0.007791 m` Cartesian error from the
+requested point. Peak active arm speed was `0.20402 rad/s`; peak release speed
+was `0.21936 rad/s`, both below the `0.25 rad/s` measured-velocity abort limit.
+The return settled within `[0.002119, 0.001108, 0.000138] m` of the initial
+right-hand point and `0.008281 rad` maximum joint residual. Video review showed
+a smooth forward raise, stable handshake-level hold, and smooth return with no
+visible contact or oscillation.
+
+Local evidence and checksum-protected analysis:
+
+```text
+artifacts/robot_dev_runs/20260901T165655.503579Z_handshake-height-10s-a/
+artifacts/robot_dev_runs/20260901T170015.199657Z_handshake-height-10s-b/
+```
+
+Physical execution is hard-disabled again:
+`PHYSICAL_EXECUTION_ENABLED = False` and `AUTHORIZED_REQUEST_SHA256 = None`.
+The offline suite passes 177 tests with pytest importlib mode. The default
+pytest importer can encounter duplicate archived test module names through
+stale `__pycache__`; use `python -m pytest -q --import-mode=importlib`.
 
 ## Current pause point: forward scenario campaign stopped at scenario 2
 
