@@ -20,9 +20,9 @@ telemetry/trajectories/20260816T004441Z/trajectory_20260816T004450.063057Z_f4fa0
 SHA-256: f272f4f03756ca7405603d69709d698843f56d9943be38d16307f2aa0baa191a
 ```
 
-It was selected because it contains a complete arm raise and release, measured
-oscillation, a BrainCo close/open cycle, a successful lifecycle, and zero
-dropped samples. The reviewed replay request is:
+It was selected because its source commands contain a complete arm raise and
+release, measured oscillation, a BrainCo close/open command cycle, a successful
+lifecycle, and zero dropped samples. The reviewed replay request is:
 
 ```text
 reviewed_cartesian_requests/trace_replay_f4fa_25pct_slow_a.json
@@ -32,9 +32,14 @@ SHA-256: 8b65ac8e55112019660df9dc49dcd4b09922ac94b407dffd357e1a2d2caa0ec0
 The request scales the source Cartesian offsets to 25%, stretches time by 4x,
 detrends the sampled trace to an exact closed endpoint, and solves every
 waypoint through the project's own IK with bounded cubic interpolation and
-RNEA feedforward. The physical run completed the normalized BrainCo close ramp,
-10-second raise, 14-second trace, source-timed hand open, 10-second return,
-authority release, and final fail-safe hand open.
+RNEA feedforward. The physical run completed the normalized BrainCo close
+command ramp, 10-second raise, 14-second trace, source-timed hand open,
+10-second return, authority release, and final fail-safe hand open. It did not
+complete a full-hand physical close: the measured state progressed from
+`[1000,510,490,490,500,500]` to `[1000,950,950,490,500,500]`, so only channels
+1 and 2 moved substantially while channels 0 and 3--5 stayed at their open
+values. Video likewise shows the fingers largely open. The later open command
+returned all six channels exactly to the captured reference.
 
 Measured trace peak-to-peak motion was `[1.798, 1.439, 6.877] mm` against
 requested `[2.635, 1.303, 7.982] mm`. Peak active joint velocity was
@@ -42,7 +47,8 @@ requested `[2.635, 1.303, 7.982] mm`. Peak active joint velocity was
 `7.564 mm` from the requested center. Return settled within
 `[1.110, 0.494, 0.035] mm` of the initial hand position and `0.003356 rad`
 maximum joint residual. Independent postflight passed `(FSM 501, mode 0)` and
-found all six BrainCo motors idle at the exact captured open reference.
+found all six BrainCo motors idle at the exact captured open reference. The arm
+trace replay therefore passed, while the hand-close criterion remains open.
 
 Three preceding attempts aborted safely before any arm command publication:
 the first exposed an incorrect BrainCo baud rate, the second an optional TTS
@@ -57,10 +63,11 @@ Physical execution is hard-disabled again in
 `AUTHORIZED_REQUEST_SHA256 = None`. The full offline suite passes 186 tests
 with pytest importlib mode.
 
-The next engineering step is repeatability and fault handling: replay this
-same immutable request across multiple fresh starting poses, quantify
-Cartesian/hand timing variance, and exercise cancellation during raise and
-trace before expanding toward moving visual targets or contact.
+The immediate next engineering step is to identify the installed Revo2
+six-channel unit mapping and calibrated range, verify each channel individually
+with conservative no-contact commands, and achieve a measured and visibly
+confirmed full-hand close/open cycle before repeating the combined trace.
+Repeatability and arm cancellation trials follow that correction.
 
 ## Current pause point: own-IK handshake-height run verified
 

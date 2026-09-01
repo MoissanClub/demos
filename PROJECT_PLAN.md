@@ -238,17 +238,20 @@ Cartesian tracking, nonhuman contact, or any human-contact gate. The immutable
 requests, telemetry/video evidence, and exact analyses are identified in
 `SESSION_HANDOFF.md`.
 
-An immutable recorded trajectory replay now also closes the first combined
-arm-and-hand integration gate. The source trace
+An immutable recorded trajectory replay closes the arm portion of the first
+combined arm-and-hand integration gate, but the hand portion remains open. The source trace
 `trajectory_20260816T004450.063057Z_f4fa0507-ba92-4675-902c-168294565857.jsonl`
 was hash-bound, converted into a 25%-scale closed Cartesian offset trace, and
 solved waypoint-by-waypoint through the project's own IK. The guarded physical
-run completed the BrainCo close/open cycle, 10-second raise, 14-second trace,
-10-second return, and controlled release. Measured trace motion was
+run completed a BrainCo close-command ramp, 10-second raise, 14-second trace,
+10-second return, and controlled release. Only hand channels 1 and 2 showed
+substantial closing motion; channels 0 and 3--5 remained at their open values,
+so this is not evidence of a full-hand close. The final open command did return
+all six channels to the captured reference. Measured trace motion was
 `[1.798, 1.439, 6.877] mm` peak-to-peak, postflight passed `(FSM 501, mode 0)`,
 and all hand motors were idle at the captured open reference. This does not yet
-close moving-target perception, contact, cancellation/failure, repeatability,
-or slack-gantry Track 1C gates.
+close full-hand actuation, moving-target perception, contact,
+cancellation/failure, repeatability, or slack-gantry Track 1C gates.
 
 ## Track 1: Custom G1 arm-control substrate
 
