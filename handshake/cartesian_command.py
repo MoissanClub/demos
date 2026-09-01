@@ -16,6 +16,53 @@ Vector3 = Tuple[float, float, float]
 Matrix3 = Tuple[Vector3, Vector3, Vector3]
 
 
+@dataclass(frozen=True)
+class CartesianOscillation:
+    """Smooth Cartesian oscillation about a reviewed raised hand pose."""
+
+    axis: Vector3 = (0.0, 0.0, 1.0)
+    amplitude_m: float = 0.005
+    frequency_hz: float = 0.25
+    duration_seconds: float = 8.0
+    waypoint_rate_hz: float = 8.0
+    maximum_joint_velocity_rad_s: float = 0.08
+    maximum_joint_acceleration_rad_s2: float = 0.20
+    waveform: str = "enveloped_sine"
+
+    def __post_init__(self) -> None:
+        axis = _vector3(self.axis, "oscillation axis")
+        norm = math.sqrt(sum(value * value for value in axis))
+        if not math.isclose(norm, 1.0, abs_tol=1e-6):
+            raise ValueError("oscillation axis must be a unit vector")
+        object.__setattr__(self, "axis", axis)
+        values = (
+            self.amplitude_m, self.frequency_hz, self.duration_seconds,
+            self.waypoint_rate_hz, self.maximum_joint_velocity_rad_s,
+            self.maximum_joint_acceleration_rad_s2,
+        )
+        if not all(math.isfinite(float(value)) for value in values):
+            raise ValueError("oscillation parameters must be finite")
+        if not 0.001 <= self.amplitude_m <= 0.02:
+            raise ValueError("oscillation amplitude must be between 0.001 and 0.02 m")
+        if not 0.1 <= self.frequency_hz <= 1.0:
+            raise ValueError("oscillation frequency must be between 0.1 and 1.0 Hz")
+        if not 2.0 <= self.duration_seconds <= 20.0:
+            raise ValueError("oscillation duration must be between 2 and 20 seconds")
+        if not 4.0 <= self.waypoint_rate_hz <= 20.0:
+            raise ValueError("oscillation waypoint rate must be between 4 and 20 Hz")
+        if not 0.01 <= self.maximum_joint_velocity_rad_s <= 0.20:
+            raise ValueError("oscillation joint velocity limit must be between 0.01 and 0.20 rad/s")
+        if not 0.02 <= self.maximum_joint_acceleration_rad_s2 <= 0.50:
+            raise ValueError("oscillation joint acceleration limit must be between 0.02 and 0.50 rad/s^2")
+        if self.waveform not in {"enveloped_sine", "raised_cosine_squared"}:
+            raise ValueError("unsupported oscillation waveform")
+        if self.waveform == "raised_cosine_squared" and not math.isclose(
+            self.duration_seconds * self.frequency_hz,
+            round(self.duration_seconds * self.frequency_hz), abs_tol=1e-9,
+        ):
+            raise ValueError("raised-cosine oscillation duration must contain whole cycles")
+
+
 def _vector3(values: Sequence[float], label: str) -> Vector3:
     if len(values) != 3:
         raise ValueError(f"{label} must contain exactly three values")
@@ -104,6 +151,7 @@ class CartesianPositionCommand:
     right_target_m: Optional[Vector3] = None
     left_target_m: Optional[Vector3] = None
     right_orientation: Optional[Matrix3] = None
+    oscillation: Optional[CartesianOscillation] = None
     duration_seconds: float = 2.0
     sample_rate_hz: float = 250.0
     maximum_displacement_m: float = 0.02
@@ -130,6 +178,8 @@ class CartesianPositionCommand:
                 self, "right_orientation",
                 _rotation3(self.right_orientation, "right target orientation"),
             )
+        if self.oscillation is not None and self.right_target_m is None:
+            raise ValueError("Cartesian oscillation requires a right Cartesian target")
         _validate_motion_bounds(self)
 
 
@@ -263,6 +313,26 @@ class G1CartesianCommandInterface:
             raise RuntimeError(
                 "absolute Cartesian endpoint rotation residual exceeds 0.015 rad"
             )
+        if command.oscillation is not None:
+            oscillation = command.oscillation
+            for sign in (-1.0, 1.0):
+                extreme = [
+                    float(right_target[i, 3]) + sign * oscillation.amplitude_m * oscillation.axis[i]
+                    for i in range(3)
+                ]
+                right_workspace.require_contains(extreme, "oscillation right hand extreme")
+            result["oscillation"] = self.planner.plan_cartesian_oscillation(
+                left_target, right_target, result["endpoint"]["positions_rad"],
+                axis=oscillation.axis,
+                amplitude_m=oscillation.amplitude_m,
+                frequency_hz=oscillation.frequency_hz,
+                duration_seconds=oscillation.duration_seconds,
+                waypoint_rate_hz=oscillation.waypoint_rate_hz,
+                sample_rate_hz=command.sample_rate_hz,
+                max_joint_velocity_rad_s=oscillation.maximum_joint_velocity_rad_s,
+                max_joint_acceleration_rad_s2=oscillation.maximum_joint_acceleration_rad_s2,
+                waveform=oscillation.waveform,
+            )
         result["command"] = {
             "frame": "world",
             "type": "absolute_position",
@@ -277,6 +347,18 @@ class G1CartesianCommandInterface:
             "maximum_displacement_m": command.maximum_displacement_m,
             "maximum_joint_offset_rad": command.maximum_joint_offset_rad,
             "maximum_joint_velocity_rad_s": command.maximum_joint_velocity_rad_s,
+            "oscillation": (
+                {
+                    "axis": list(command.oscillation.axis),
+                    "amplitude_m": command.oscillation.amplitude_m,
+                    "frequency_hz": command.oscillation.frequency_hz,
+                    "duration_seconds": command.oscillation.duration_seconds,
+                    "waypoint_rate_hz": command.oscillation.waypoint_rate_hz,
+                    "maximum_joint_velocity_rad_s": command.oscillation.maximum_joint_velocity_rad_s,
+                    "maximum_joint_acceleration_rad_s2": command.oscillation.maximum_joint_acceleration_rad_s2,
+                    "waveform": command.oscillation.waveform,
+                } if command.oscillation is not None else None
+            ),
         }
         result["workspace_m"] = {
             "left": {"minimum": list(left_workspace.minimum_m),

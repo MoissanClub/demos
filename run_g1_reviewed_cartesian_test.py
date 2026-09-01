@@ -169,6 +169,11 @@ def main(argv=None) -> int:
             for index in ARM_JOINT_INDICES
         }
         plan_summary = {key: value for key, value in plan.items() if key != "samples"}
+        if "oscillation" in plan_summary:
+            plan_summary["oscillation"] = {
+                key: value for key, value in plan_summary["oscillation"].items()
+                if key != "samples"
+            }
         if not run.record(
             "events", "cartesian-planner",
             {"event": "cartesian_plan_completed_before_physical_session", **plan_summary},
@@ -239,6 +244,8 @@ def main(argv=None) -> int:
         controller.attach_command_sink(command_sink)
         session.event("physical_publisher_ready", physical_sink.runtime_configuration())
         controller.raise_arm(offsets)
+        if "oscillation" in plan:
+            controller.oscillate(plan["oscillation"])
         hold_started = time.monotonic()
         hold_deadline = hold_started + 1.0
         hold_tick = 0
@@ -249,7 +256,10 @@ def main(argv=None) -> int:
             next_hold_deadline = hold_started + hold_tick * hold_period
             time.sleep(max(0.0, next_hold_deadline - time.monotonic()))
         controller.release_arm()
-        result, reason = "complete", "cartesian_out_return_release_complete"
+        result, reason = "complete", (
+            "cartesian_oscillation_return_release_complete"
+            if "oscillation" in plan else "cartesian_out_return_release_complete"
+        )
     except KeyboardInterrupt:
         result, reason = "aborted", "operator_cancelled"
     except BaseException as exc:

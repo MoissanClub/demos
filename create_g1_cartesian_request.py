@@ -3,7 +3,9 @@
 import argparse
 from pathlib import Path
 
-from handshake.cartesian_command import CartesianPositionCommand, CartesianWorkspace
+from handshake.cartesian_command import (
+    CartesianOscillation, CartesianPositionCommand, CartesianWorkspace,
+)
 from handshake.cartesian_request import CartesianMoveRequest
 
 
@@ -23,6 +25,18 @@ def parse_args(argv=None):
     parser.add_argument("--maximum-displacement-m", type=float, default=0.01)
     parser.add_argument("--maximum-joint-offset-rad", type=float, default=0.05)
     parser.add_argument("--maximum-joint-velocity-rad-s", type=float, default=0.02)
+    parser.add_argument("--oscillation-axis", nargs=3, type=float)
+    parser.add_argument("--oscillation-amplitude-m", type=float)
+    parser.add_argument("--oscillation-frequency-hz", type=float, default=0.25)
+    parser.add_argument("--oscillation-duration-seconds", type=float, default=8.0)
+    parser.add_argument("--oscillation-waypoint-rate-hz", type=float, default=8.0)
+    parser.add_argument("--oscillation-maximum-joint-velocity-rad-s", type=float, default=0.08)
+    parser.add_argument("--oscillation-maximum-joint-acceleration-rad-s2", type=float, default=0.20)
+    parser.add_argument(
+        "--oscillation-waveform",
+        choices=("enveloped_sine", "raised_cosine_squared"),
+        default="enveloped_sine",
+    )
     return parser.parse_args(argv)
 
 
@@ -36,6 +50,18 @@ def main(argv=None):
                 tuple(tuple(args.right_orientation[row * 3 + column] for column in range(3))
                       for row in range(3))
                 if args.right_orientation is not None else None
+            ),
+            oscillation=(
+                CartesianOscillation(
+                    axis=args.oscillation_axis or (0.0, 0.0, 1.0),
+                    amplitude_m=args.oscillation_amplitude_m,
+                    frequency_hz=args.oscillation_frequency_hz,
+                    duration_seconds=args.oscillation_duration_seconds,
+                    waypoint_rate_hz=args.oscillation_waypoint_rate_hz,
+                    maximum_joint_velocity_rad_s=args.oscillation_maximum_joint_velocity_rad_s,
+                    maximum_joint_acceleration_rad_s2=args.oscillation_maximum_joint_acceleration_rad_s2,
+                    waveform=args.oscillation_waveform,
+                ) if args.oscillation_amplitude_m is not None else None
             ),
             duration_seconds=args.duration_seconds,
             sample_rate_hz=args.sample_rate_hz,

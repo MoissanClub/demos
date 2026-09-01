@@ -227,7 +227,7 @@ class ContinuousArmController:
         # the outgoing arm-SDK target.
         tracking_phases = {
             "authority_acquire", "raise", "raised_settle", "raised_hold",
-            "return", "return_settle",
+            "oscillate", "oscillation_settle", "return", "return_settle",
         }
         if (
             self.last_target is not None
@@ -245,7 +245,8 @@ class ContinuousArmController:
     def _send(self, target: Mapping[int, float], velocity: Mapping[int, float], weight: float) -> None:
         measured, _, _ = self._check_state()
         if self.config.max_command_lead_rad is not None and self.phase in {
-            "raise", "raised_settle", "raised_hold", "return", "return_settle",
+            "raise", "raised_settle", "raised_hold", "oscillate",
+            "oscillation_settle", "return", "return_settle",
         }:
             maximum_error = max(abs(float(target[i]) - measured[i]) for i in ARM_JOINT_INDICES)
             scale = max(1.0, maximum_error / self.config.max_command_lead_rad)
@@ -369,6 +370,82 @@ class ContinuousArmController:
         if self.phase != "raised_hold" or self.raised_pose is None:
             raise RuntimeError("hold_once requires a raised arm")
         self._send(self.raised_pose, {i: 0.0 for i in ARM_JOINT_INDICES}, 1.0)
+
+    def oscillate(self, trajectory: Mapping[str, Any]) -> None:
+        """Execute one prevalidated closed joint trajectory about raised pose."""
+        if self.phase != "raised_hold" or self.raised_pose is None or self.initial_pose is None:
+            raise RuntimeError("oscillate requires a successfully raised arm")
+        duration = float(trajectory["duration_seconds"])
+        samples = list(trajectory["samples"])
+        if len(samples) < 2 or not math.isclose(
+            float(samples[0]["time_seconds"]), 0.0, abs_tol=1e-9
+        ) or not math.isclose(
+            float(samples[-1]["time_seconds"]), duration, abs_tol=1e-6
+        ):
+            raise ValueError("oscillation trajectory has invalid time bounds")
+        measured, measured_velocity, _ = self._check_state()
+        if any(
+            abs(float(measured_velocity[i])) > self.config.settle_velocity_rad_s
+            for i in ARM_JOINT_INDICES
+        ):
+            raise RuntimeError("arm is not stationary before oscillation rebase")
+        live_center = {i: float(measured[i]) for i in ARM_JOINT_INDICES}
+        planned_center = samples[0]["positions_rad"]
+        rebase = {
+            i: live_center[i] - float(planned_center[i])
+            for i in ARM_JOINT_INDICES
+        }
+        maximum_rebase = max(abs(value) for value in rebase.values())
+        if maximum_rebase > self.config.pose_tolerance_rad + 1e-9:
+            raise ValueError(
+                f"oscillation planning-to-execution rebase {maximum_rebase:.5f} rad "
+                f"exceeds settle tolerance {self.config.pose_tolerance_rad:.5f} rad"
+            )
+        samples = [
+            {
+                **sample,
+                "positions_rad": {
+                    i: float(sample["positions_rad"][i]) + rebase[i]
+                    for i in ARM_JOINT_INDICES
+                },
+            }
+            for sample in samples
+        ]
+        self.raised_pose = live_center
+        self.event("oscillation_rebased", {
+            "maximum_joint_rebase_rad": maximum_rebase,
+            "basis": "fresh_measured_settled_pose",
+        })
+        for sample in samples:
+            positions = sample["positions_rad"]
+            velocities = sample["velocities_rad_s"]
+            if set(positions) != set(ARM_JOINT_INDICES) or set(velocities) != set(ARM_JOINT_INDICES):
+                raise ValueError("oscillation sample has incomplete joint mapping")
+            if any(
+                not math.isfinite(float(positions[i])) or not math.isfinite(float(velocities[i]))
+                for i in ARM_JOINT_INDICES
+            ):
+                raise ValueError("oscillation sample contains a non-finite value")
+            if max(
+                abs(float(positions[i]) - self.initial_pose[i]) for i in ARM_JOINT_INDICES
+            ) > self.config.max_offset_rad:
+                raise ValueError("oscillation sample exceeds configured maximum offset")
+        for endpoint_name, sample in (("start", samples[0]), ("finish", samples[-1])):
+            if max(
+                abs(float(sample["positions_rad"][i]) - self.raised_pose[i])
+                for i in ARM_JOINT_INDICES
+            ) > 1e-8:
+                raise ValueError(f"oscillation {endpoint_name} does not match raised pose")
+
+        def oscillating(fraction: float):
+            index = min(len(samples) - 1, int(round(fraction * (len(samples) - 1))))
+            sample = samples[index]
+            return sample["positions_rad"], sample["velocities_rad_s"], 1.0
+
+        self._run_timed("oscillate", duration, oscillating)
+        self._hold_until_settled("oscillation_settle", self.raised_pose)
+        self.phase = "raised_hold"
+        self.event("oscillation_finished", {"duration_seconds": duration})
 
     def abort_release(self) -> None:
         """Release arm-SDK authority from the measured pose after a motion fault."""

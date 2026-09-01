@@ -945,3 +945,33 @@ At the start of the next session, read this file and `PROJECT_PLAN.md`, inspect
 `git status`, review both incident reports, and begin with the hard disable and
 offline continuous-arm-SDK redesign. Do not resume physical preflight or
 publication unless the user establishes a new return-to-test review.
+
+## Verified own-IK oscillation (2026-09-02)
+
+The guarded request
+`reviewed_cartesian_requests/handshake_oscillation_4mm_raised_cosine_f.json`
+(`d5be4706c8b33225a65f3fefb78e5a27c97c4be8fda793ee4072037d975df8d7`)
+completed a 10-second own-IK raise, two vertical raised-cosine-squared cycles
+over 16 seconds, a controlled return, authority release, and restoration of
+standard mode `(FSM 501, mode 0)`.
+
+The immutable run artifact is
+`artifacts/robot_dev_runs/20260901T173745.730241Z_handshake-oscillation-4mm-raised-cosine-f`.
+Measured vertical peak-to-peak motion was `0.007540 m` in cycle 1 and
+`0.005959 m` in cycle 2. Peak active-arm speed was `0.179476 rad/s`; all
+`14,324` command records were contiguous. Return-settled maximum joint residual
+was `0.003320 rad`, and post-native-release maximum joint residual was
+`0.001774 rad`. The artifact's effective `incomplete` label is solely from a
+non-control stop-recording TTS RPC returning 3104 after the verified motion and
+postflight had completed.
+
+The run's `verification.md` contains a sentence-level video review: every
+observation cites an exact UTC timestamp and frame index and links its extracted
+JPEG in `evidence/`. Physical execution is disabled again in
+`run_g1_reviewed_cartesian_test.py`; its authorization hash is `None`.
+
+The next user-selected goal is to score the immutable files under
+`telemetry/trajectories/` for a complete raise/release, measured oscillation,
+and BrainCo hand close/open cycle, then reproduce the selected Cartesian trace
+through the own-IK safety pipeline rather than directly replaying measured
+joint state.

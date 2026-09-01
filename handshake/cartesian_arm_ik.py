@@ -234,6 +234,138 @@ class G1CartesianArmIK:
             max_joint_step_rad, max_joint_velocity_rad_s,
         )
 
+    def plan_cartesian_oscillation(
+        self, left_target, right_center, raised: Mapping[int, float], *,
+        axis, amplitude_m: float, frequency_hz: float, duration_seconds: float,
+        waypoint_rate_hz: float, sample_rate_hz: float,
+        max_joint_velocity_rad_s: float, max_joint_acceleration_rad_s2: float,
+        waveform: str = "enveloped_sine",
+    ):
+        """Warm-start Cartesian waypoints, then spline a closed joint cycle."""
+        from scipy.interpolate import CubicSpline
+
+        np = self.np
+        axis = np.asarray(axis, dtype=float)
+        left = self._transform(left_target, "oscillation left target")
+        center = self._transform(right_center, "oscillation right center")
+        q_center = self._vector(raised, "raised positions")
+        waypoint_count = int(round(duration_seconds * waypoint_rate_hz)) + 1
+        waypoint_times = np.linspace(0.0, duration_seconds, waypoint_count)
+
+        def offset_at(time_seconds):
+            if waveform == "raised_cosine_squared":
+                rise = (1.0 - math.cos(2.0 * math.pi * frequency_hz * time_seconds)) / 2.0
+                return amplitude_m * rise**2
+            envelope = math.sin(math.pi * time_seconds / duration_seconds) ** 2
+            return amplitude_m * envelope * math.sin(2.0 * math.pi * frequency_hz * time_seconds)
+
+        extrema = {}
+        waypoint_errors = []
+        for sign in (-1.0, 1.0):
+            right = center.copy()
+            right[:3, 3] += axis * amplitude_m * sign
+            solved = self.solve(
+                left, right, raised, max_joint_step_rad=0.10,
+                initial_guess=raised,
+            )
+            if max(solved["translation_error_m"].values()) > 0.005:
+                raise RuntimeError(
+                    f"oscillation {sign:+.0f} amplitude translation residual exceeds 0.005 m"
+                )
+            if max(solved["rotation_error_rad"].values()) > 0.015:
+                raise RuntimeError(
+                    f"oscillation {sign:+.0f} amplitude rotation residual exceeds 0.015 rad"
+                )
+            extrema[sign] = self._vector(solved["positions_rad"], "oscillation extremum")
+            waypoint_errors.append({
+                "normalized_amplitude": sign,
+                "translation_error_m": solved["translation_error_m"],
+                "rotation_error_rad": solved["rotation_error_rad"],
+            })
+        linear = (extrema[1.0] - extrema[-1.0]) / (2.0 * amplitude_m)
+        quadratic = (
+            extrema[1.0] + extrema[-1.0] - 2.0 * q_center
+        ) / (2.0 * amplitude_m**2)
+        waypoint_q = np.asarray([
+            q_center + linear * offset_at(float(timestamp))
+            + quadratic * offset_at(float(timestamp)) ** 2
+            for timestamp in waypoint_times
+        ])
+        spline = CubicSpline(
+            waypoint_times, waypoint_q, axis=0,
+            bc_type=((1, np.zeros(14)), (1, np.zeros(14))),
+        )
+        sample_count = int(round(duration_seconds * sample_rate_hz)) + 1
+        sample_times = np.linspace(0.0, duration_seconds, sample_count)
+        q_samples = spline(sample_times)
+        dq_samples = spline(sample_times, 1)
+        ddq_samples = spline(sample_times, 2)
+        maximum_velocity = float(np.max(np.abs(dq_samples)))
+        maximum_acceleration = float(np.max(np.abs(ddq_samples)))
+        maximum_center_offset = float(np.max(np.abs(q_samples - q_center)))
+        if maximum_velocity > max_joint_velocity_rad_s:
+            raise RuntimeError(
+                f"oscillation joint velocity {maximum_velocity:.4f} rad/s exceeds "
+                f"{max_joint_velocity_rad_s:.4f} rad/s"
+            )
+        if maximum_acceleration > max_joint_acceleration_rad_s2:
+            raise RuntimeError(
+                f"oscillation joint acceleration {maximum_acceleration:.4f} rad/s^2 exceeds "
+                f"{max_joint_acceleration_rad_s2:.4f} rad/s^2"
+            )
+        if np.any(q_samples < self.robot.model.lowerPositionLimit - 1e-9) or np.any(
+            q_samples > self.robot.model.upperPositionLimit + 1e-9
+        ):
+            raise RuntimeError("oscillation spline exceeds a model joint limit")
+        samples = []
+        maximum_translation_error = 0.0
+        maximum_rotation_error = 0.0
+        for index, timestamp in enumerate(sample_times):
+            positions = dict(zip(ARM_JOINT_INDICES, map(float, q_samples[index])))
+            velocities = dict(zip(ARM_JOINT_INDICES, map(float, dq_samples[index])))
+            actual_left, actual_right = self.forward_kinematics(positions)
+            desired_right = center.copy()
+            desired_right[:3, 3] += axis * offset_at(float(timestamp))
+            translation_error = max(
+                float(np.linalg.norm(actual_left[:3, 3] - left[:3, 3])),
+                float(np.linalg.norm(actual_right[:3, 3] - desired_right[:3, 3])),
+            )
+            rotation_error = max(
+                float(np.linalg.norm(self.pin.log3(actual_left[:3, :3].T @ left[:3, :3]))),
+                float(np.linalg.norm(self.pin.log3(actual_right[:3, :3].T @ desired_right[:3, :3]))),
+            )
+            maximum_translation_error = max(maximum_translation_error, translation_error)
+            maximum_rotation_error = max(maximum_rotation_error, rotation_error)
+            samples.append({
+                "time_seconds": float(timestamp),
+                "positions_rad": positions,
+                "velocities_rad_s": velocities,
+                "feedforward_torques_nm": self.feedforward(positions, velocities),
+            })
+        if maximum_translation_error > 0.006:
+            raise RuntimeError(
+                f"oscillation spline translation residual {maximum_translation_error:.4f} m exceeds 0.006 m"
+            )
+        if maximum_rotation_error > 0.016:
+            raise RuntimeError(
+                f"oscillation spline rotation residual {maximum_rotation_error:.4f} rad exceeds 0.016 rad"
+            )
+        return {
+            "duration_seconds": duration_seconds,
+            "sample_rate_hz": sample_rate_hz,
+            "sample_count": sample_count,
+            "waypoint_rate_hz": waypoint_rate_hz,
+            "waypoint_count": waypoint_count,
+            "waveform": waveform,
+            "maximum_joint_velocity_rad_s": maximum_velocity,
+            "maximum_joint_acceleration_rad_s2": maximum_acceleration,
+            "maximum_joint_offset_from_center_rad": maximum_center_offset,
+            "maximum_translation_error_m": maximum_translation_error,
+            "maximum_rotation_error_rad": maximum_rotation_error,
+            "waypoint_errors": waypoint_errors,
+            "samples": samples,
+        }
+
     def _time_parameterize(
         self, endpoint, initial, duration_seconds, sample_rate_hz,
         max_joint_step_rad, max_joint_velocity_rad_s,

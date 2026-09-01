@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from handshake.cartesian_command import CartesianPositionCommand, CartesianWorkspace
+from handshake.cartesian_command import (
+    CartesianOscillation, CartesianPositionCommand, CartesianWorkspace,
+)
 
 
 SCHEMA_VERSION = "1.0"
@@ -40,6 +42,19 @@ class CartesianMoveRequest:
         }
         if self.command.right_orientation is not None:
             command["right_orientation"] = self.command.right_orientation
+        if self.command.oscillation is not None:
+            oscillation = self.command.oscillation
+            command["oscillation"] = {
+                "axis": oscillation.axis,
+                "amplitude_m": oscillation.amplitude_m,
+                "frequency_hz": oscillation.frequency_hz,
+                "duration_seconds": oscillation.duration_seconds,
+                "waypoint_rate_hz": oscillation.waypoint_rate_hz,
+                "maximum_joint_velocity_rad_s": oscillation.maximum_joint_velocity_rad_s,
+                "maximum_joint_acceleration_rad_s2": oscillation.maximum_joint_acceleration_rad_s2,
+            }
+            if oscillation.waveform != "enveloped_sine":
+                command["oscillation"]["waveform"] = oscillation.waveform
         return {
             "schema_version": SCHEMA_VERSION,
             "attempt_id": self.attempt_id,
@@ -85,8 +100,20 @@ class CartesianMoveRequest:
             "sample_rate_hz", "maximum_displacement_m", "maximum_joint_offset_rad",
             "maximum_joint_velocity_rad_s",
         }
-        if set(command) not in (expected_command, expected_command | {"right_orientation"}):
+        optional_command = {"right_orientation", "oscillation"}
+        if not expected_command <= set(command) or not set(command) <= expected_command | optional_command:
             raise ValueError("Cartesian request command has missing or unknown fields")
+        oscillation = command.get("oscillation")
+        if oscillation is not None:
+            expected_oscillation = {
+                "axis", "amplitude_m", "frequency_hz", "duration_seconds",
+                "waypoint_rate_hz", "maximum_joint_velocity_rad_s",
+                "maximum_joint_acceleration_rad_s2",
+            }
+            if not isinstance(oscillation, Mapping) or set(oscillation) not in (
+                expected_oscillation, expected_oscillation | {"waveform"},
+            ):
+                raise ValueError("Cartesian request has invalid oscillation fields")
         workspaces = value["workspace_m"]
         if not isinstance(workspaces, Mapping) or set(workspaces) != {"left", "right"}:
             raise ValueError("Cartesian request must define both hand workspaces")
@@ -100,6 +127,18 @@ class CartesianMoveRequest:
                 right_target_m=command["right_target_m"],
                 left_target_m=command["left_target_m"],
                 right_orientation=command.get("right_orientation"),
+                oscillation=(
+                    CartesianOscillation(
+                        axis=oscillation["axis"],
+                        amplitude_m=float(oscillation["amplitude_m"]),
+                        frequency_hz=float(oscillation["frequency_hz"]),
+                        duration_seconds=float(oscillation["duration_seconds"]),
+                        waypoint_rate_hz=float(oscillation["waypoint_rate_hz"]),
+                        maximum_joint_velocity_rad_s=float(oscillation["maximum_joint_velocity_rad_s"]),
+                        maximum_joint_acceleration_rad_s2=float(oscillation["maximum_joint_acceleration_rad_s2"]),
+                        waveform=str(oscillation.get("waveform", "enveloped_sine")),
+                    ) if oscillation is not None else None
+                ),
                 duration_seconds=float(command["duration_seconds"]),
                 sample_rate_hz=float(command["sample_rate_hz"]),
                 maximum_displacement_m=float(command["maximum_displacement_m"]),

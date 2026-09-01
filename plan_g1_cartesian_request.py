@@ -34,6 +34,11 @@ def main(argv=None):
     )
     if not args.include_samples:
         result = {key: value for key, value in result.items() if key != "samples"}
+        if "oscillation" in result:
+            result["oscillation"] = {
+                key: value for key, value in result["oscillation"].items()
+                if key != "samples"
+            }
     print(json.dumps({
         "publishes_commands": False,
         "attempt_id": request.attempt_id,

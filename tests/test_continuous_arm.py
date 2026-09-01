@@ -186,6 +186,48 @@ class ContinuousArmControllerTests(unittest.TestCase):
         full_authority = next(command for command in plant.commands if command[3] == 1.0)
         self.assertTrue(all(full_authority[2][i] == 1.0 for i in ARM_JOINT_INDICES))
 
+    def test_closed_oscillation_executes_between_raise_and_return(self):
+        clock, events = FakeClock(), []
+        plant = Plant(clock)
+        controller = self.make_controller(plant, clock, events)
+        offsets = {index: (0.1 if index == 25 else 0.0) for index in ARM_JOINT_INDICES}
+        controller.raise_arm(offsets)
+        center = dict(controller.raised_pose)
+        excursion = dict(center)
+        excursion[25] += 0.01
+        zeros = {index: 0.0 for index in ARM_JOINT_INDICES}
+        controller.oscillate({
+            "duration_seconds": 0.5,
+            "samples": [
+                {"time_seconds": 0.0, "positions_rad": center, "velocities_rad_s": zeros},
+                {"time_seconds": 0.25, "positions_rad": excursion, "velocities_rad_s": zeros},
+                {"time_seconds": 0.5, "positions_rad": center, "velocities_rad_s": zeros},
+            ],
+        })
+        self.assertEqual(controller.phase, "raised_hold")
+        controller.release_arm()
+        phases = [details["phase"] for name, details in events if name == "phase_started"]
+        self.assertIn("oscillate", phases)
+        self.assertIn("oscillation_settle", phases)
+        self.assertLess(max(command[0][25] for command in plant.commands), 0.111)
+
+    def test_oscillation_rebases_small_planning_pose_drift(self):
+        clock, events = FakeClock(), []
+        plant = Plant(clock)
+        controller = self.make_controller(plant, clock, events)
+        controller.raise_arm({i: (0.1 if i == 25 else 0.0) for i in ARM_JOINT_INDICES})
+        planned = {i: controller.raised_pose[i] - 0.001 for i in ARM_JOINT_INDICES}
+        zeros = {i: 0.0 for i in ARM_JOINT_INDICES}
+        controller.oscillate({
+            "duration_seconds": 0.5,
+            "samples": [
+                {"time_seconds": 0.0, "positions_rad": planned, "velocities_rad_s": zeros},
+                {"time_seconds": 0.5, "positions_rad": planned, "velocities_rad_s": zeros},
+            ],
+        })
+        rebased = [details for name, details in events if name == "oscillation_rebased"]
+        self.assertAlmostEqual(rebased[-1]["maximum_joint_rebase_rad"], 0.001)
+
     def test_release_waits_for_internal_mode_zero(self):
         clock, events = FakeClock(), []
         plant = Plant(clock)

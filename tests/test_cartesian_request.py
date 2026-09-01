@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from handshake.cartesian_command import CartesianPositionCommand, CartesianWorkspace
+from handshake.cartesian_command import (
+    CartesianOscillation, CartesianPositionCommand, CartesianWorkspace,
+)
 from handshake.cartesian_request import CartesianMoveRequest
 
 
@@ -61,6 +63,29 @@ class CartesianMoveRequestTests(unittest.TestCase):
                 right_target_m=(0.02, -0.23, -0.10),
                 right_orientation=((1.0, 0.0, 0.0), (0.0, 2.0, 0.0), (0.0, 0.0, 1.0)),
             )
+
+    def test_oscillation_round_trips_and_changes_hash(self):
+        request = self.request()
+        oscillating = CartesianMoveRequest(
+            attempt_id=request.attempt_id,
+            command=CartesianPositionCommand(
+                right_target_m=request.command.right_target_m,
+                oscillation=CartesianOscillation(),
+                duration_seconds=request.command.duration_seconds,
+                maximum_displacement_m=request.command.maximum_displacement_m,
+                maximum_joint_offset_rad=request.command.maximum_joint_offset_rad,
+                maximum_joint_velocity_rad_s=request.command.maximum_joint_velocity_rad_s,
+            ),
+            left_workspace=request.left_workspace,
+            right_workspace=request.right_workspace,
+        )
+        loaded = CartesianMoveRequest.from_mapping(oscillating.as_dict())
+        self.assertEqual(loaded, oscillating)
+        self.assertNotEqual(loaded.sha256, request.sha256)
+
+    def test_oscillation_axis_must_be_unit_length(self):
+        with self.assertRaisesRegex(ValueError, "unit vector"):
+            CartesianOscillation(axis=(0.0, 0.0, 2.0))
 
     def test_reviewed_handshake_scale_bounds_are_allowed(self):
         command = CartesianPositionCommand(

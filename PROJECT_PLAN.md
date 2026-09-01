@@ -201,7 +201,7 @@ Implementation does not imply that a physical exit criterion has been met.
 | Episode validator | Implemented; first baseline complete | Extend with plots and telemetry analysis; decide how rejected data is quarantined. |
 | Depth-gated visual invitation | Interim implementation | It detects depth-gated scene change, not a semantic human hand or hand position. |
 | `rt/arm_sdk` actuator layer | Implemented; gantry-attached raise/return verified | Extend cancellation/failure trials and characterize tracking/torque margins over the approved workspace. |
-| Full deterministic arm raise/shake/return | Raise/hold/return verified; shake pending | Add a small bounded oscillation at the verified raised pose, then verify the complete sequence. |
+| Full deterministic arm raise/shake/return | Verified under gantry | Extend cancellation/failure trials and characterize repeatability before closing Track 1C. |
 | Native self-balance with custom arm control | Regular-mode coexistence verified under gantry; broader validation open | Repeat dynamic and cancellation trials, quantify lower-body/IMU response, and validate with the gantry slack before closing 1C. |
 | Semantic hand detection and 3D localization | Planned | Prototype and validate in observe-only mode. |
 | Bounded inverse-kinematics approach | Implemented; one handshake-height target physically verified | Add collision/posture objectives, multi-target workspace coverage, moving-target replay, and loss/cancellation tests. |
@@ -230,10 +230,13 @@ first-raise gates:
   with `0.20402 rad/s` peak active-arm speed.
 
 This closes the Track 1A exit criterion for the current gantry-attached robot
-configuration. It does not close Track 1B oscillation, Track 1C slack-gantry
-balance validation, autonomous Cartesian tracking, nonhuman contact, or any
-human-contact gate. The immutable request, telemetry/video evidence, and exact
-analysis are identified in `SESSION_HANDOFF.md`.
+configuration. A later own-IK run also closed the bounded Track 1B oscillation
+gate: two raised-cosine vertical cycles completed between the verified raise
+and return, followed by authority release and restoration of `(FSM 501, mode
+0)`. It does not close Track 1C slack-gantry balance validation, autonomous
+Cartesian tracking, nonhuman contact, or any human-contact gate. The immutable
+requests, telemetry/video evidence, and exact analyses are identified in
+`SESSION_HANDOFF.md`.
 
 ## Track 1: Custom G1 arm-control substrate
 
@@ -704,22 +707,13 @@ Add it only for a concrete personalization feature, with:
 
 ## Immediate next implementation steps
 
-1. Add a small, smooth, explicitly bounded right-arm oscillation around the
-   verified own-IK handshake-height pose. Keep acquisition, raise, return, and
-   release in the same continuous arm-SDK session.
-2. Generate the complete raise/settle/oscillate/settle/return/release command
-   stream offline. Verify joint position, speed, acceleration, feedforward
-   torque, workspace, timing, and discontinuity limits, including cancellation
-   and stale-telemetry failure injection in every phase.
-3. Run the first gantry-attached oscillation at the lowest useful amplitude and
-   frequency within a newly reviewed envelope. Independently inspect all
-   telemetry and synchronized video and preserve the immutable run artifacts.
-4. Iterate bounded oscillation amplitude/frequency only after the preceding run
-   passes; quantify tracking error, IMU/lower-body response, authority release,
-   and return repeatability.
-5. Complete Track 1C slack-gantry balance and cancellation trials for the
+1. Complete Track 1C cancellation and stale-telemetry failure trials in every
+   phase of the verified raise/oscillate/return sequence.
+2. Quantify repeatability, tracking error, IMU/lower-body response, authority
+   release, and safe return over the approved workspace and oscillation envelope.
+3. Complete Track 1C slack-gantry balance trials for the
    deterministic raise/shake/return sequence.
-6. In parallel with later Track 1C work, prototype semantic hand detection and
+4. In parallel with Track 1C work, prototype semantic hand detection and
    RealSense 3D localization in observe-only mode. Do not use perception output
    to command the arm until its accuracy, uncertainty, staleness, and loss
    behavior pass Track 2A.

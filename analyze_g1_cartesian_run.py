@@ -137,6 +137,60 @@ def main(argv=None):
         if right_target is not None else None
     )
     final_sample = samples[-1]
+    oscillation_motion = None
+    if "oscillate_started" in event_times and "oscillate_finished" in event_times:
+        oscillation_samples = [
+            sample for sample in samples
+            if event_times["oscillate_started"] <= sample["monotonic_ns"]
+            <= event_times["oscillate_finished"]
+        ]
+        oscillation_center = min(
+            samples,
+            key=lambda sample: abs(sample["monotonic_ns"] - event_times["oscillate_started"]),
+        )["delta"]
+        relative = [
+            tuple(sample["delta"][axis] - oscillation_center[axis] for axis in range(3))
+            for sample in oscillation_samples
+        ]
+        oscillation_motion = {
+            "sample_count": len(relative),
+            "right_hand_minimum_from_center_m": [min(row[axis] for row in relative) for axis in range(3)],
+            "right_hand_maximum_from_center_m": [max(row[axis] for row in relative) for axis in range(3)],
+            "right_hand_peak_to_peak_m": [
+                max(row[axis] for row in relative) - min(row[axis] for row in relative)
+                for axis in range(3)
+            ],
+        }
+        oscillation_request = (
+            manifest.get("metadata", {}).get("request", {})
+            .get("command", {}).get("oscillation")
+        )
+        if oscillation_request is not None:
+            period_seconds = 1.0 / float(oscillation_request["frequency_hz"])
+            cycle_count = int(round(
+                float(oscillation_request["duration_seconds"]) / period_seconds
+            ))
+            cycles = []
+            for cycle_index in range(cycle_count):
+                cycle_start = event_times["oscillate_started"] + int(
+                    cycle_index * period_seconds * 1e9
+                )
+                cycle_end = cycle_start + int(period_seconds * 1e9)
+                cycle_rows = [
+                    sample for sample in oscillation_samples
+                    if cycle_start <= sample["monotonic_ns"] <= cycle_end
+                ]
+                cycle_relative_z = [
+                    sample["delta"][2] - oscillation_center[2]
+                    for sample in cycle_rows
+                ]
+                cycles.append({
+                    "cycle_index": cycle_index + 1,
+                    "minimum_z_from_center_m": min(cycle_relative_z),
+                    "maximum_z_from_center_m": max(cycle_relative_z),
+                    "peak_to_peak_z_m": max(cycle_relative_z) - min(cycle_relative_z),
+                })
+            oscillation_motion["cycles"] = cycles
     return_settled_joint_residual = max(
         abs(return_settled_sample["positions"][index] - initial_positions[index])
         for index in ARM_JOINT_INDICES
@@ -216,6 +270,7 @@ def main(argv=None):
             "return_settled_maximum_joint_residual_rad": return_settled_joint_residual,
             "post_native_release_right_hand_residual_m": final_sample["delta"],
             "post_native_release_maximum_joint_residual_rad": post_release_joint_residual,
+            "oscillation": oscillation_motion,
         },
         "imu": {
             "maximum_gyroscope_norm_rad_s": maximum_gyro,
