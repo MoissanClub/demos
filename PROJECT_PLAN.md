@@ -200,14 +200,40 @@ Implementation does not imply that a physical exit criterion has been met.
 | Hugging Face upload | Initial post-run upload implemented | Verify privacy and idempotence; decide whether a separate durable spool/uploader is required. |
 | Episode validator | Implemented; first baseline complete | Extend with plots and telemetry analysis; decide how rejected data is quarantined. |
 | Depth-gated visual invitation | Interim implementation | It detects depth-gated scene change, not a semantic human hand or hand position. |
-| `rt/arm_sdk` actuator layer | Continuous authority cycle demonstrated; compensated validation pending | Add bounded Pinocchio RNEA feedforward and validate a compensated zero-offset authority cycle before reviewing any raise candidate. |
-| Full deterministic arm raise/shake/return | Planned; raise paused | One arm-SDK session owns every arm phase; begin only after compensated zero-offset motion, torque, FSM transition, and release behavior are accepted. |
-| Native self-balance with custom arm control | Architecture supported; local validation required | Verify exact G1/firmware behavior with Regular/Motion mode + `rt/arm_sdk` under gantry. |
+| `rt/arm_sdk` actuator layer | Implemented; gantry-attached raise/return verified | Extend cancellation/failure trials and characterize tracking/torque margins over the approved workspace. |
+| Full deterministic arm raise/shake/return | Raise/hold/return verified; shake pending | Add a small bounded oscillation at the verified raised pose, then verify the complete sequence. |
+| Native self-balance with custom arm control | Regular-mode coexistence verified under gantry; broader validation open | Repeat dynamic and cancellation trials, quantify lower-body/IMU response, and validate with the gantry slack before closing 1C. |
 | Semantic hand detection and 3D localization | Planned | Prototype and validate in observe-only mode. |
-| Bounded inverse-kinematics approach | Architecture selected; implementation deferred | Use 6D Cartesian intent, constrained posture-aware IK, and a smooth bounded joint trajectory after compensated zero-offset arm control passes. |
+| Bounded inverse-kinematics approach | Implemented; one handshake-height target physically verified | Add collision/posture objectives, multi-target workspace coverage, moving-target replay, and loss/cancellation tests. |
 | Staged validation without gantry | Planned | Requires reviewed balance/control evidence, a defined test envelope, and explicit approval. |
 | Integrated safety supervisor | Planned | Integrate before learned actions can command hardware. |
 | Learned vision+touch arm/hand policy | Future | Requires validated actuator layer, data, action representation, deterministic bounds, and evaluation protocol. |
+
+### Verified arm-control baseline (2026-09-02)
+
+The current implementation has passed the earlier compensated-control and
+first-raise gates:
+
+- the robot remains in Unitree Regular/Motion Control mode while custom arm
+  commands use only `rt/arm_sdk`;
+- Pinocchio RNEA feedforward uses the checked-out G1 model with a verified
+  14-joint SDK/model mapping and conservative per-joint torque bounds;
+- the absolute Cartesian interface accepts a reviewed right-hand position and
+  orientation, validates the rotation, enforces workspace/motion bounds, and
+  chooses the valid deterministic multi-start IK solution with the least
+  predicted peak joint speed;
+- attempt `handshake-height-10s-b` raised the right hand over 10 seconds,
+  settled, held, returned over 10 seconds, released authority, and restored
+  `(FSM 501, mode 0)`; and
+- the measured settled hand position was
+  `[0.264704, -0.139741, 0.102549] m`, `0.007791 m` from the reviewed target,
+  with `0.20402 rad/s` peak active-arm speed.
+
+This closes the Track 1A exit criterion for the current gantry-attached robot
+configuration. It does not close Track 1B oscillation, Track 1C slack-gantry
+balance validation, autonomous Cartesian tracking, nonhuman contact, or any
+human-contact gate. The immutable request, telemetry/video evidence, and exact
+analysis are identified in `SESSION_HANDOFF.md`.
 
 ## Track 1: Custom G1 arm-control substrate
 
@@ -264,7 +290,7 @@ signs, finite-value checks, conservative per-joint bounds, authority-consistent
 blending, and command telemetry. Raw estimated/measured torque is not an
 approved substitute for model-based feedforward.
 
-Before any raise candidate, validate in this order:
+The original pre-raise validation sequence was completed in this order:
 
 1. Verify model configuration, 14-joint ordering, RNEA signs, and bounds
    offline, including NaN, mapping, stale-state, and model-load failures.
@@ -273,13 +299,16 @@ Before any raise candidate, validate in this order:
 3. Run a newly approved gantry-attached compensated zero-offset cycle and
    compare its joint motion, torque, FSM transition, and release against the
    three uncompensated baselines.
-4. Review a minimum-amplitude raise only after the compensated results are
-   repeatable and accepted.
+4. Review and physically verify bounded raises only after the compensated
+   results are repeatable and accepted.
 
 Exit criterion: while the robot remains in Regular/Motion Control mode, the
 controller can acquire arm authority without a discontinuity, hold the measured
 pose, execute one tiny bounded arm movement, return, and release authority while
 Unitree continues to own the lower body.
+
+Status: met for the current gantry-attached configuration. Continue regression
+coverage and failure-path testing as the motion envelope expands.
 
 ### 1B. Deterministic programmable handshake motion
 
@@ -408,6 +437,14 @@ to the detected hand. Three-dimensional position alone cannot define palm
 orientation or a natural elbow and wrist posture. Constrained IK converts the
 target into joint positions, and the deterministic actuator executes them with
 joint PD and model-based feedforward.
+
+Current implementation supports an immutable absolute world-frame target with
+an optional reviewed right-hand orientation, workspace and motion bounds,
+deterministic multi-start IK, least-maximum-joint-speed selection, smooth
+time-parameterized execution, synchronized evidence, controlled return, and
+authority release. A fixed handshake-height target has been physically
+verified. Moving-target tracking, collision-aware secondary objectives, and
+perception-driven target updates remain open.
 
 Required work:
 
@@ -631,9 +668,9 @@ Add it only for a concrete personalization feature, with:
 | Camera storage | Decide before vision-policy training; current tactile dataset may remain image-free | Open |
 | Identity capability | Hand detection before optional identity recognition | Proposed |
 | First learned motor action | Bounded arm `q_target` + BrainCo finger targets | Proposed |
-| Arm control runtime | Regular/Motion mode + `rt/arm_sdk` | Selected; local validation required |
+| Arm control runtime | Regular/Motion mode + `rt/arm_sdk` | Selected; gantry-attached coexistence verified |
 | Handshake motion representation | 6D Cartesian intent -> constrained posture-aware IK -> smooth bounded joint trajectory | Selected |
-| Low-level arm control | Joint PD + bounded Pinocchio RNEA feedforward | Selected; compensated validation pending |
+| Low-level arm control | Joint PD + bounded Pinocchio RNEA feedforward | Selected; physically validated for bounded raise/return |
 | Whole-body `rt/lowcmd` | Not used for normal learned-policy runtime | Selected |
 | Waist control | Leave native initially | Selected; revisit only with evidence |
 | Learned torque/gains | Out of scope initially | Selected |
@@ -644,21 +681,17 @@ Add it only for a concrete personalization feature, with:
   firmware?
 - At what rate can tactile and motor state be read concurrently without serial
   timeouts?
-- What are the exact verified arm joint indices, limits, and available wrist
-  DOFs for the installed G1 configuration?
 - What `kp`/`kd` values and command rate are appropriate for conservative
-  `rt/arm_sdk` position control on this robot/firmware?
-- How should arm-SDK authority ramping behave during normal acquisition,
-  cancellation, and failure recovery?
-- What preparation/handshake pose is safest on the installed firmware?
+  `rt/arm_sdk` position control as the tested workspace expands beyond the
+  verified baseline?
+- How should arm-SDK authority and safe return behave during cancellation and
+  injected failures in every phase?
+- How broadly can the verified handshake-height pose and orientation be varied
+  while preserving tracking, clearance, and low body disturbance?
 - Which subset of arm joints produces the most natural low-disturbance shake?
 - How much lower-body compensation is observed for increasingly dynamic arm
   trajectories while remaining within the approved envelope?
 - What localization accuracy and sampling rate are required for a safe approach?
-- What conservative per-joint feedforward-torque bounds and blend schedule hold
-  the initial pose without inducing a control transient?
-- Does the checked-out Pinocchio model and joint ordering exactly match this G1
-  hardware and firmware configuration?
 - What 6D handshake-pose convention and secondary IK objectives produce a
   natural elbow and wrist posture across the approved interaction volume?
 - Should the first learned action be Cartesian deltas through deterministic IK
@@ -671,24 +704,25 @@ Add it only for a concrete personalization feature, with:
 
 ## Immediate next implementation steps
 
-1. Reuse the checked-out `xr_teleoperate` G1 Pinocchio model to compute RNEA
-   feedforward, after verifying model variant, configuration mapping, joint
-   order, and torque signs for the 14 controlled arm joints.
-2. Extend the continuous arm controller and publisher for 14 finite, bounded
-   feedforward torques blended consistently with arm-SDK authority.
-3. Add offline mapping, limit, command-generation, and failure-injection tests;
-   then review a command-only compensated zero-offset acquire/hold/release run.
-4. Prepare a new gantry-attached compensated zero-offset test for explicit
-   approval; do not run a raise candidate yet.
-5. Compare compensated joint motion and authority release against the three
-   successful uncompensated zero-offset baselines.
-6. Extend recording to capture every phase, arm target, feedforward torque,
-   measured arm and lower-body state, authority weight, limit decision,
-   cancellation, and timing.
-7. Validate one minimum-amplitude arm-SDK raise and return before adding shake.
-8. Validate the full deterministic arm-SDK raise/shake/return/release sequence,
-   then native lower-body balance, before adding hand, touch, vision, or policy
-   outputs.
+1. Add a small, smooth, explicitly bounded right-arm oscillation around the
+   verified own-IK handshake-height pose. Keep acquisition, raise, return, and
+   release in the same continuous arm-SDK session.
+2. Generate the complete raise/settle/oscillate/settle/return/release command
+   stream offline. Verify joint position, speed, acceleration, feedforward
+   torque, workspace, timing, and discontinuity limits, including cancellation
+   and stale-telemetry failure injection in every phase.
+3. Run the first gantry-attached oscillation at the lowest useful amplitude and
+   frequency within a newly reviewed envelope. Independently inspect all
+   telemetry and synchronized video and preserve the immutable run artifacts.
+4. Iterate bounded oscillation amplitude/frequency only after the preceding run
+   passes; quantify tracking error, IMU/lower-body response, authority release,
+   and return repeatability.
+5. Complete Track 1C slack-gantry balance and cancellation trials for the
+   deterministic raise/shake/return sequence.
+6. In parallel with later Track 1C work, prototype semantic hand detection and
+   RealSense 3D localization in observe-only mode. Do not use perception output
+   to command the arm until its accuracy, uncertainty, staleness, and loss
+   behavior pass Track 2A.
 
 ## References
 
