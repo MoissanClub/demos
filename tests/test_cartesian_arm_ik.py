@@ -51,6 +51,33 @@ class G1CartesianArmIKTests(unittest.TestCase):
         self.assertEqual(result["samples"][0]["positions_rad"], self.initial)
         self.assertEqual(result["samples"][-1]["positions_rad"], result["endpoint"]["positions_rad"])
 
+    def test_cartesian_offset_trace_is_re_solved_and_closes_exactly(self):
+        left, right = self.ik.forward_kinematics(self.initial)
+        result = self.ik.plan_cartesian_offset_trace(
+            left, right, self.initial,
+            waypoint_times_seconds=(0.0, 2.0, 4.0),
+            right_offsets_m=((0.0, 0.0, 0.0), (0.0, 0.0, 0.001), (0.0, 0.0, 0.0)),
+            sample_rate_hz=50.0,
+            max_joint_velocity_rad_s=0.02,
+            max_joint_acceleration_rad_s2=0.10,
+        )
+        self.assertEqual(result["sample_count"], 201)
+        self.assertEqual(result["samples"][0]["positions_rad"], self.initial)
+        for index in ARM_JOINT_INDICES:
+            self.assertAlmostEqual(result["samples"][-1]["positions_rad"][index], self.initial[index])
+            self.assertAlmostEqual(result["samples"][0]["velocities_rad_s"][index], 0.0)
+            self.assertAlmostEqual(result["samples"][-1]["velocities_rad_s"][index], 0.0)
+
+    def test_cartesian_offset_trace_rejects_open_endpoint(self):
+        left, right = self.ik.forward_kinematics(self.initial)
+        with self.assertRaisesRegex(ValueError, "begin and end"):
+            self.ik.plan_cartesian_offset_trace(
+                left, right, self.initial,
+                waypoint_times_seconds=(0.0, 1.0, 2.0),
+                right_offsets_m=((0.0, 0.0, 0.0), (0.0, 0.0, 0.001), (0.0, 0.0, 0.001)),
+                sample_rate_hz=50.0,
+            )
+
     def test_invalid_transform_fails_closed(self):
         left, right = self.ik.forward_kinematics(self.initial)
         right[3, 3] = 2.0

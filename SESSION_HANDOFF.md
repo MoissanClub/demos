@@ -2,6 +2,66 @@
 
 Last updated: 2026-09-02 (Asia/Shanghai)
 
+## Current pause point: immutable own-IK trace replay verified
+
+The operator confirmed the robot was under the gantry, the arm workspace was
+clear, and a dedicated emergency-stop operator was present. The USB verifier
+camera recorded the complete moving arm and upper body. The successful guarded
+run is:
+
+```text
+artifacts/robot_dev_runs/20260901T182607.243046Z_trace-replay-f4fa-25pct-slow-a/
+```
+
+The selected immutable source was:
+
+```text
+telemetry/trajectories/20260816T004441Z/trajectory_20260816T004450.063057Z_f4fa0507-ba92-4675-902c-168294565857.jsonl
+SHA-256: f272f4f03756ca7405603d69709d698843f56d9943be38d16307f2aa0baa191a
+```
+
+It was selected because it contains a complete arm raise and release, measured
+oscillation, a BrainCo close/open cycle, a successful lifecycle, and zero
+dropped samples. The reviewed replay request is:
+
+```text
+reviewed_cartesian_requests/trace_replay_f4fa_25pct_slow_a.json
+SHA-256: 8b65ac8e55112019660df9dc49dcd4b09922ac94b407dffd357e1a2d2caa0ec0
+```
+
+The request scales the source Cartesian offsets to 25%, stretches time by 4x,
+detrends the sampled trace to an exact closed endpoint, and solves every
+waypoint through the project's own IK with bounded cubic interpolation and
+RNEA feedforward. The physical run completed the normalized BrainCo close ramp,
+10-second raise, 14-second trace, source-timed hand open, 10-second return,
+authority release, and final fail-safe hand open.
+
+Measured trace peak-to-peak motion was `[1.798, 1.439, 6.877] mm` against
+requested `[2.635, 1.303, 7.982] mm`. Peak active joint velocity was
+`0.210155 rad/s`, below the `0.25 rad/s` controller limit. The raised hand was
+`7.564 mm` from the requested center. Return settled within
+`[1.110, 0.494, 0.035] mm` of the initial hand position and `0.003356 rad`
+maximum joint residual. Independent postflight passed `(FSM 501, mode 0)` and
+found all six BrainCo motors idle at the exact captured open reference.
+
+Three preceding attempts aborted safely before any arm command publication:
+the first exposed an incorrect BrainCo baud rate, the second an optional TTS
+failure, and the third the current Revo2 calibration's requirement for the
+positions-and-speeds API. Each attempt has timestamped video analysis and
+checksum-protected evidence. The successful run's `verification.md` contains
+the complete telemetry assessment and a sentence-level timestamp/frame/evidence
+video review.
+
+Physical execution is hard-disabled again in
+`run_g1_reviewed_trace_replay.py`: `PHYSICAL_EXECUTION_ENABLED = False` and
+`AUTHORIZED_REQUEST_SHA256 = None`. The full offline suite passes 186 tests
+with pytest importlib mode.
+
+The next engineering step is repeatability and fault handling: replay this
+same immutable request across multiple fresh starting poses, quantify
+Cartesian/hand timing variance, and exercise cancellation during raise and
+trace before expanding toward moving visual targets or contact.
+
 ## Current pause point: own-IK handshake-height run verified
 
 The operator confirmed a clear arm workspace, standard mode under the gantry,

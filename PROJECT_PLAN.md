@@ -204,7 +204,7 @@ Implementation does not imply that a physical exit criterion has been met.
 | Full deterministic arm raise/shake/return | Verified under gantry | Extend cancellation/failure trials and characterize repeatability before closing Track 1C. |
 | Native self-balance with custom arm control | Regular-mode coexistence verified under gantry; broader validation open | Repeat dynamic and cancellation trials, quantify lower-body/IMU response, and validate with the gantry slack before closing 1C. |
 | Semantic hand detection and 3D localization | Planned | Prototype and validate in observe-only mode. |
-| Bounded inverse-kinematics approach | Implemented; one handshake-height target physically verified | Add collision/posture objectives, multi-target workspace coverage, moving-target replay, and loss/cancellation tests. |
+| Bounded inverse-kinematics approach | Implemented; handshake-height, oscillation, and immutable recorded-trace replay physically verified | Add collision/posture objectives, multi-target workspace coverage, moving-target tracking, and loss/cancellation tests. |
 | Staged validation without gantry | Planned | Requires reviewed balance/control evidence, a defined test envelope, and explicit approval. |
 | Integrated safety supervisor | Planned | Integrate before learned actions can command hardware. |
 | Learned vision+touch arm/hand policy | Future | Requires validated actuator layer, data, action representation, deterministic bounds, and evaluation protocol. |
@@ -237,6 +237,18 @@ and return, followed by authority release and restoration of `(FSM 501, mode
 Cartesian tracking, nonhuman contact, or any human-contact gate. The immutable
 requests, telemetry/video evidence, and exact analyses are identified in
 `SESSION_HANDOFF.md`.
+
+An immutable recorded trajectory replay now also closes the first combined
+arm-and-hand integration gate. The source trace
+`trajectory_20260816T004450.063057Z_f4fa0507-ba92-4675-902c-168294565857.jsonl`
+was hash-bound, converted into a 25%-scale closed Cartesian offset trace, and
+solved waypoint-by-waypoint through the project's own IK. The guarded physical
+run completed the BrainCo close/open cycle, 10-second raise, 14-second trace,
+10-second return, and controlled release. Measured trace motion was
+`[1.798, 1.439, 6.877] mm` peak-to-peak, postflight passed `(FSM 501, mode 0)`,
+and all hand motors were idle at the captured open reference. This does not yet
+close moving-target perception, contact, cancellation/failure, repeatability,
+or slack-gantry Track 1C gates.
 
 ## Track 1: Custom G1 arm-control substrate
 

@@ -366,6 +366,144 @@ class G1CartesianArmIK:
             "samples": samples,
         }
 
+    def plan_cartesian_offset_trace(
+        self, left_target, right_center, raised: Mapping[int, float], *,
+        waypoint_times_seconds, right_offsets_m, sample_rate_hz: float = 250.0,
+        max_joint_velocity_rad_s: float = 0.10,
+        max_joint_acceleration_rad_s2: float = 0.25,
+    ):
+        """Re-solve a reviewed closed Cartesian offset trace through IK.
+
+        The source offsets are Cartesian intent only.  Measured source joints
+        are never replayed.  Orientation remains fixed at the reviewed raised
+        pose, and every waypoint is warm-started from the preceding IK result.
+        """
+        from scipy.interpolate import CubicSpline
+
+        np = self.np
+        times = np.asarray(waypoint_times_seconds, dtype=float)
+        offsets = np.asarray(right_offsets_m, dtype=float)
+        if times.ndim != 1 or len(times) < 3 or offsets.shape != (len(times), 3):
+            raise ValueError("Cartesian trace must contain at least three timed 3D offsets")
+        if not np.all(np.isfinite(times)) or not np.all(np.isfinite(offsets)):
+            raise ValueError("Cartesian trace contains non-finite values")
+        if times[0] != 0.0 or np.any(np.diff(times) <= 0.0):
+            raise ValueError("Cartesian trace times must start at zero and increase")
+        if times[-1] > 30.0:
+            raise ValueError("Cartesian trace duration exceeds 30 seconds")
+        if not 50.0 <= sample_rate_hz <= 250.0:
+            raise ValueError("Cartesian trace sample rate must be between 50 and 250 Hz")
+        if np.max(np.abs(offsets[[0, -1]])) > 1e-9:
+            raise ValueError("Cartesian trace must begin and end at its raised center")
+        if np.max(np.linalg.norm(offsets, axis=1)) > 0.03:
+            raise ValueError("Cartesian trace offset exceeds 0.03 m")
+
+        left = self._transform(left_target, "trace left target")
+        center = self._transform(right_center, "trace right center")
+        previous = dict(raised)
+        waypoint_q = []
+        waypoint_errors = []
+        for timestamp, offset in zip(times, offsets):
+            target = center.copy()
+            target[:3, 3] += offset
+            solved = self.solve(
+                left, target, previous, max_joint_step_rad=0.10,
+                initial_guess=previous,
+            )
+            if max(solved["translation_error_m"].values()) > 0.005:
+                raise RuntimeError("trace waypoint translation residual exceeds 0.005 m")
+            if max(solved["rotation_error_rad"].values()) > 0.015:
+                raise RuntimeError("trace waypoint rotation residual exceeds 0.015 rad")
+            previous = solved["positions_rad"]
+            waypoint_q.append(self._vector(previous, "trace waypoint"))
+            waypoint_errors.append({
+                "time_seconds": float(timestamp),
+                "translation_error_m": solved["translation_error_m"],
+                "rotation_error_rad": solved["rotation_error_rad"],
+            })
+
+        waypoint_q = np.asarray(waypoint_q)
+        # Force exact joint closure onto the reviewed raised solution.  The
+        # Cartesian endpoints are already zero-offset and independently solved.
+        q_center = self._vector(raised, "raised positions")
+        waypoint_q[0] = q_center
+        waypoint_q[-1] = q_center
+        spline = CubicSpline(
+            times, waypoint_q, axis=0,
+            bc_type=((1, np.zeros(14)), (1, np.zeros(14))),
+        )
+        count = int(round(float(times[-1]) * sample_rate_hz)) + 1
+        sample_times = np.linspace(0.0, float(times[-1]), count)
+        q_samples = spline(sample_times)
+        dq_samples = spline(sample_times, 1)
+        ddq_samples = spline(sample_times, 2)
+        offset_spline = CubicSpline(
+            times, offsets, axis=0,
+            bc_type=((1, np.zeros(3)), (1, np.zeros(3))),
+        )
+        maximum_velocity = float(np.max(np.abs(dq_samples)))
+        maximum_acceleration = float(np.max(np.abs(ddq_samples)))
+        if maximum_velocity > max_joint_velocity_rad_s:
+            raise RuntimeError(
+                f"trace joint velocity {maximum_velocity:.4f} rad/s exceeds "
+                f"{max_joint_velocity_rad_s:.4f} rad/s"
+            )
+        if maximum_acceleration > max_joint_acceleration_rad_s2:
+            raise RuntimeError(
+                f"trace joint acceleration {maximum_acceleration:.4f} rad/s^2 exceeds "
+                f"{max_joint_acceleration_rad_s2:.4f} rad/s^2"
+            )
+        if np.any(q_samples < self.robot.model.lowerPositionLimit - 1e-9) or np.any(
+            q_samples > self.robot.model.upperPositionLimit + 1e-9
+        ):
+            raise RuntimeError("Cartesian trace spline exceeds a model joint limit")
+        samples = []
+        maximum_translation_error = 0.0
+        maximum_rotation_error = 0.0
+        for index, timestamp in enumerate(sample_times):
+            positions = dict(zip(ARM_JOINT_INDICES, map(float, q_samples[index])))
+            velocities = dict(zip(ARM_JOINT_INDICES, map(float, dq_samples[index])))
+            actual_left, actual_right = self.forward_kinematics(positions)
+            desired_right = center.copy()
+            desired_right[:3, 3] += offset_spline(float(timestamp))
+            translation_error = max(
+                float(np.linalg.norm(actual_left[:3, 3] - left[:3, 3])),
+                float(np.linalg.norm(actual_right[:3, 3] - desired_right[:3, 3])),
+            )
+            rotation_error = max(
+                float(np.linalg.norm(self.pin.log3(actual_left[:3, :3].T @ left[:3, :3]))),
+                float(np.linalg.norm(self.pin.log3(actual_right[:3, :3].T @ desired_right[:3, :3]))),
+            )
+            maximum_translation_error = max(maximum_translation_error, translation_error)
+            maximum_rotation_error = max(maximum_rotation_error, rotation_error)
+            samples.append({
+                "time_seconds": float(timestamp),
+                "positions_rad": positions,
+                "velocities_rad_s": velocities,
+                "feedforward_torques_nm": self.feedforward(positions, velocities),
+            })
+        if maximum_translation_error > 0.006:
+            raise RuntimeError(
+                f"trace spline translation residual {maximum_translation_error:.4f} m exceeds 0.006 m"
+            )
+        if maximum_rotation_error > 0.016:
+            raise RuntimeError(
+                f"trace spline rotation residual {maximum_rotation_error:.4f} rad exceeds 0.016 rad"
+            )
+        return {
+            "duration_seconds": float(times[-1]),
+            "sample_rate_hz": sample_rate_hz,
+            "sample_count": count,
+            "waypoint_count": len(times),
+            "maximum_joint_velocity_rad_s": maximum_velocity,
+            "maximum_joint_acceleration_rad_s2": maximum_acceleration,
+            "maximum_joint_offset_from_center_rad": float(np.max(np.abs(q_samples - q_center))),
+            "maximum_translation_error_m": maximum_translation_error,
+            "maximum_rotation_error_rad": maximum_rotation_error,
+            "waypoint_errors": waypoint_errors,
+            "samples": samples,
+        }
+
     def _time_parameterize(
         self, endpoint, initial, duration_seconds, sample_rate_hz,
         max_joint_step_rad, max_joint_velocity_rad_s,
