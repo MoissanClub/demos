@@ -18,15 +18,21 @@ class _Command:
     reason: str
     completed: threading.Event
     retries: int = 1
+    settle_tolerance: Optional[int] = None
+    settle_timeout_seconds: float = 0.0
     error: Optional[BaseException] = None
 
 
 class BrainCoHandReplay:
     """Own one serial hand and reopen it on every normal shutdown path."""
 
+    VERIFIED_OPEN_POSITIONS = (1000, 510, 490, 490, 500, 500)
+
     def __init__(
         self, sdk, port: str, baud_enum, slave_id: int, event: EventCallback,
         *, timeout_seconds: float = 2.0,
+        open_positions: Optional[Sequence[int]] = None,
+        close_positions: Optional[Sequence[int]] = None,
     ) -> None:
         self.sdk = sdk
         self.port = port
@@ -40,6 +46,16 @@ class BrainCoHandReplay:
         self._error: Optional[BaseException] = None
         self._schedulers: list[threading.Thread] = []
         self.open_positions: Optional[tuple[int, ...]] = None
+        self._configured_open_positions = tuple(
+            int(value) for value in (open_positions or self.VERIFIED_OPEN_POSITIONS)
+        )
+        self.close_positions = tuple(int(value) for value in (
+            close_positions or (500, 500, 1000, 1000, 1000, 1000)
+        ))
+        for label, values in (("open", self._configured_open_positions),
+                              ("close", self.close_positions)):
+            if len(values) != 6 or any(value < 0 or value > 1000 for value in values):
+                raise ValueError(f"BrainCo {label} pose must contain six values in [0, 1000]")
 
     def start(self) -> None:
         if self._thread is not None:
@@ -51,7 +67,10 @@ class BrainCoHandReplay:
         self.raise_if_failed()
         if self.open_positions is None:
             raise RuntimeError("BrainCo worker did not capture an open reference")
-        self.open("initial_open", wait=True, retries=3)
+        self.command(
+            self.open_positions, "initial_open", wait=True, retries=3,
+            settle_tolerance=30, settle_timeout_seconds=8.0,
+        )
 
     def _thread_main(self) -> None:
         try:
@@ -99,11 +118,14 @@ class BrainCoHandReplay:
         if len(initial_positions) != 6 or any(
             value < 0 or value > 10000 for value in initial_positions
         ):
-            raise RuntimeError("BrainCo open reference is outside normalized bounds")
-        self.open_positions = initial_positions
-        self.event("brainco_hand_open_reference", {
+            raise RuntimeError("BrainCo initial state is outside recoverable bounds")
+        self.event("brainco_hand_initial_observed", {
             "positions": list(initial_positions),
-            "basis": "fresh_measured_normalized_pose",
+        })
+        self.open_positions = self._configured_open_positions
+        self.event("brainco_hand_open_reference", {
+            "positions": list(self.open_positions),
+            "basis": "verified_robot_specific_normalized_pose",
         })
         self._ready.set()
         try:
@@ -117,18 +139,45 @@ class BrainCoHandReplay:
                     break
                 for attempt in range(1, command.retries + 1):
                     try:
-                        await asyncio.wait_for(
-                            context.set_finger_positions_and_speeds(
-                                self.slave_id, list(command.positions), [100] * 6
-                            ),
-                            self.timeout_seconds,
+                        finger_ids = (
+                            self.sdk.FingerId.Thumb,
+                            self.sdk.FingerId.ThumbAux,
+                            self.sdk.FingerId.Index,
+                            self.sdk.FingerId.Middle,
+                            self.sdk.FingerId.Ring,
+                            self.sdk.FingerId.Pinky,
                         )
+                        transmitted_positions = [round(target / 10) for target in command.positions]
+                        for finger_id, target in zip(finger_ids, transmitted_positions):
+                            await asyncio.wait_for(
+                                context.set_finger_position_with_millis(
+                                    self.slave_id, finger_id, target, 500
+                                ),
+                                self.timeout_seconds,
+                            )
                         status = await asyncio.wait_for(
                             context.get_motor_status(self.slave_id), self.timeout_seconds
                         )
                         measured = list(getattr(status, "positions", []))
+                        if command.settle_tolerance is not None:
+                            deadline = time.monotonic() + command.settle_timeout_seconds
+                            while max(abs(a - b) for a, b in zip(
+                                measured, command.positions
+                            )) > command.settle_tolerance:
+                                if time.monotonic() >= deadline:
+                                    raise RuntimeError(
+                                        "BrainCo hand did not settle to all six targets: "
+                                        f"target={list(command.positions)}, measured={measured}"
+                                    )
+                                await asyncio.sleep(0.05)
+                                status = await asyncio.wait_for(
+                                    context.get_motor_status(self.slave_id),
+                                    self.timeout_seconds,
+                                )
+                                measured = list(getattr(status, "positions", []))
                         self.event("brainco_hand_command", {
                             "positions": list(command.positions),
+                            "per_finger_api_positions": transmitted_positions,
                             "reason": command.reason,
                             "measured_positions": measured,
                             "attempt": attempt,
@@ -150,27 +199,38 @@ class BrainCoHandReplay:
                     self._error = command.error
                 command.completed.set()
         finally:
-            close = getattr(context, "close", None)
+            close = getattr(self.sdk, "modbus_close", None)
             if callable(close):
-                result = close()
+                result = close(context)
                 if asyncio.iscoroutine(result):
                     await result
 
     def command(
         self, positions: Sequence[int], reason: str, *, wait: bool = False,
         retries: int = 1, ignore_existing_error: bool = False,
+        settle_tolerance: Optional[int] = None,
+        settle_timeout_seconds: float = 0.0,
     ) -> None:
         if not ignore_existing_error:
             self.raise_if_failed()
         values = tuple(int(value) for value in positions)
-        if len(values) != 6 or any(value < 0 or value > 10000 for value in values):
-            raise ValueError("reviewed BrainCo command must contain six normalized positions in [0, 10000]")
+        if len(values) != 6 or any(value < 0 or value > 1000 for value in values):
+            raise ValueError("reviewed BrainCo command must contain six normalized positions in [0, 1000]")
         if not 1 <= retries <= 3:
             raise ValueError("BrainCo command retries must be between one and three")
-        command = _Command(values, reason, threading.Event(), retries=retries)
+        if settle_tolerance is not None and not 0 <= settle_tolerance <= 100:
+            raise ValueError("BrainCo settle tolerance must be in [0, 100]")
+        if settle_tolerance is not None and settle_timeout_seconds <= 0:
+            raise ValueError("BrainCo settle timeout must be positive")
+        command = _Command(
+            values, reason, threading.Event(), retries=retries,
+            settle_tolerance=settle_tolerance,
+            settle_timeout_seconds=float(settle_timeout_seconds),
+        )
         self._commands.put(command)
         if wait and not command.completed.wait(
             self.timeout_seconds * 2.0 * retries + 0.5 * (retries - 1)
+            + command.settle_timeout_seconds
         ):
             raise RuntimeError("BrainCo hand command completion timed out")
         if command.error is not None:
@@ -180,18 +240,26 @@ class BrainCoHandReplay:
         if not ignore_existing_error:
             self.raise_if_failed()
 
-    def start_close_ramp(self, *, step: int = 50, period_seconds: float = 0.2) -> None:
+    def start_close_ramp(self, *, steps: int = 10, period_seconds: float = 0.2) -> None:
         if self.open_positions is None:
             raise RuntimeError("BrainCo replay worker has no open reference")
         baseline = self.open_positions
 
         def schedule():
-            for delta in range(step, 501, step):
+            for index in range(1, steps + 1):
+                fraction = index / steps
+                target = tuple(round(
+                    start + fraction * (end - start)
+                ) for start, end in zip(baseline, self.close_positions))
                 self.command(
-                    tuple(min(10000, value + delta) for value in baseline),
+                    target,
                     "source_close_ramp",
+                    wait=index == steps,
+                    settle_tolerance=30 if index == steps else None,
+                    settle_timeout_seconds=5.0 if index == steps else 0.0,
                 )
-                time.sleep(period_seconds)
+                if index < steps:
+                    time.sleep(period_seconds)
         thread = threading.Thread(target=self._guard_scheduler(schedule), daemon=True)
         self._schedulers.append(thread)
         thread.start()
@@ -203,6 +271,14 @@ class BrainCoHandReplay:
         thread = threading.Thread(target=self._guard_scheduler(schedule), daemon=True)
         self._schedulers.append(thread)
         thread.start()
+
+    def wait_schedulers(self, timeout_seconds: float = 10.0) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        for thread in self._schedulers:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        if any(thread.is_alive() for thread in self._schedulers):
+            raise RuntimeError("BrainCo scheduled command did not finish")
+        self.raise_if_failed()
 
     def _guard_scheduler(self, operation):
         def guarded():

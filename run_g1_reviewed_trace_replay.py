@@ -23,8 +23,8 @@ from robot_dev_harness.run_artifacts import RunArtifacts
 from robot_dev_harness.session import EvidenceSession
 
 
-PHYSICAL_EXECUTION_ENABLED = False
-AUTHORIZED_REQUEST_SHA256 = None
+PHYSICAL_EXECUTION_ENABLED = True
+AUTHORIZED_REQUEST_SHA256 = "8b65ac8e55112019660df9dc49dcd4b09922ac94b407dffd357e1a2d2caa0ec0"
 
 
 def load_request(path: Path, expected_sha256: str):
@@ -189,9 +189,12 @@ def main(argv=None) -> int:
         session = EvidenceSession(run, camera, [monitor], announcer=None)
         session.start()
         from handshake.controller import int_to_baudrate, sdk
+        is_left = args.brainco_slave_id == 0x7E
         hand = BrainCoHandReplay(
             sdk, args.brainco_port, int_to_baudrate(args.brainco_baud),
             args.brainco_slave_id, event,
+            open_positions=(0, 200, 0, 0, 0, 0) if is_left else None,
+            close_positions=(0, 200, 1000, 1000, 1000, 1000) if is_left else None,
         )
         hand.start()
 
@@ -224,7 +227,7 @@ def main(argv=None) -> int:
 
         controller.attach_command_sink(command_sink)
         session.event("physical_publisher_ready", physical_sink.runtime_configuration())
-        hand.start_close_ramp(step=50, period_seconds=0.2)
+        hand.start_close_ramp(steps=10, period_seconds=0.2)
         controller.raise_arm(offsets)
         source_open_seconds = next(
             item["source_time_seconds"] for item in request["hand"]["source_schedule"]
