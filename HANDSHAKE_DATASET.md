@@ -25,6 +25,23 @@ The configured repository is currently `davidwei79/g1-handshake-data` and is
 created as private. Files are written as `.tmp` and atomically renamed when
 finalized. Treat remaining `.tmp` files as incomplete.
 
+## Restore after reimaging
+
+After cloning the GitHub repository, install `huggingface_hub`, authenticate,
+and restore the archived data into the checkout:
+
+```bash
+python -m pip install huggingface_hub
+hf auth login
+python restore_handshake_data.py --dry-run
+python restore_handshake_data.py
+```
+
+The restore is resumable through the Hugging Face cache. Existing identical
+files are skipped, while differing files are reported as conflicts unless
+`--overwrite` is explicitly supplied. Use `--cache-dir` to put the download
+cache on a disk with sufficient free space.
+
 ## Record envelope and time
 
 JSON Lines means every line is one complete JSON object, not one element of a
